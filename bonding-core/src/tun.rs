@@ -2,7 +2,7 @@
 //!
 //! This module provides a cross-platform interface for TUN devices:
 //! - Windows: Uses Wintun
-//! - Linux: Uses /dev/net/tun (future)
+//! - Linux: Uses /dev/net/tun
 //!
 //! # Safety
 //!
@@ -13,6 +13,9 @@ use std::io;
 
 #[cfg(target_os = "windows")]
 pub mod wintun;
+
+#[cfg(target_os = "linux")]
+pub mod linux;
 
 /// Trait for TUN device implementations
 pub trait TunDevice: Send + Sync {
@@ -33,6 +36,9 @@ pub trait TunDevice: Send + Sync {
 
 #[cfg(target_os = "windows")]
 pub use wintun::WintunDevice;
+
+#[cfg(target_os = "linux")]
+pub use linux::LinuxTunDevice;
 
 #[cfg(test)]
 mod tests {
