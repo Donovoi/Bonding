@@ -27,6 +27,11 @@ const DEFAULT_MTU: usize = 1420;
 const ADAPTER_NAME: &str = "Bonding";
 
 /// Wintun adapter GUID (tunnel type identifier)
+/// 
+/// This GUID was generated specifically for the Bonding project and serves as a unique
+/// identifier for the tunnel type. It helps Windows distinguish Bonding adapters from
+/// other Wintun-based VPN applications. This GUID is consistent across all Bonding
+/// installations to enable adapter reuse and proper identification.
 const ADAPTER_GUID: &str = "5fb1c3e4-2e82-4e1b-a2f6-1d5c3e4f5a6b";
 
 /// Wintun TUN device implementation

@@ -28,6 +28,30 @@ const DEFAULT_DEVICE_NAME: &str = "bonding0";
 ///
 /// This structure wraps the Linux TUN device and provides a safe interface
 /// for reading and writing IP packets.
+///
+/// # Important Note on Async vs Sync
+///
+/// The underlying `tun-rs` library is async-only. The `TunDevice` trait methods
+/// (`read_packet` and `write_packet`) will return `WouldBlock` errors to indicate
+/// that async operations should be used instead.
+///
+/// For Linux, use `device_handle()` to get access to the async device for actual
+/// I/O operations in async contexts.
+///
+/// # Example
+///
+/// ```no_run
+/// # use bonding_core::tun::LinuxTunDevice;
+/// # async fn example() -> std::io::Result<()> {
+/// let device = LinuxTunDevice::new("tun0").await?;
+/// let device_handle = device.device_handle();
+///
+/// // Use async operations on the device handle in async context
+/// // The device_handle is an Arc<Mutex<tun_rs::AsyncDevice>>
+/// // which can be used with tokio for async I/O
+/// # Ok(())
+/// # }
+/// ```
 pub struct LinuxTunDevice {
     name: String,
     mtu: usize,
@@ -107,13 +131,16 @@ impl TunDevice for LinuxTunDevice {
     fn read_packet(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
         // The TunDevice trait is synchronous, but tun-rs AsyncDevice requires async
         // For Linux, users should use the async device directly via device_handle()
+        // This is a design limitation of the current TunDevice trait which was
+        // designed with Windows Wintun's sync API in mind
         Err(io::Error::new(
             io::ErrorKind::WouldBlock,
-            "Use async operations for Linux TUN device - call device_handle() to get async device",
+            "Linux TUN device requires async operations - use device_handle() to get async device",
         ))
     }
 
     fn write_packet(&self, buf: &[u8]) -> io::Result<()> {
+        // Validate input first for consistent error messages
         if buf.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -133,9 +160,10 @@ impl TunDevice for LinuxTunDevice {
         }
 
         // The TunDevice trait is synchronous, but tun-rs AsyncDevice requires async
+        // Validation passed, but operation requires async context
         Err(io::Error::new(
             io::ErrorKind::WouldBlock,
-            "Use async operations for Linux TUN device - call device_handle() to get async device",
+            "Linux TUN device requires async operations - use device_handle() to get async device",
         ))
     }
 
