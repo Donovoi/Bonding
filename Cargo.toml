@@ -38,6 +38,7 @@ anyhow = "1.0"
 
 # Windows-specific
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
+wintun = "0.5"
 
 # Testing
 mockall = "0.13"
