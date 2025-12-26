@@ -383,11 +383,12 @@ The project uses an automated release pipeline that triggers when pull requests 
 
 ### Automated Release (Recommended)
 
-When you merge a PR that includes a version bump, the release pipeline automatically:
+When you merge a PR that includes a version bump, the release pipeline automatically creates a release:
 
-1. **Update version** in the workspace `Cargo.toml` (increment version number)
-2. **Create a PR** with your changes
-3. **Merge the PR** - This triggers the automated release pipeline:
+1. **Make your changes** in a feature branch
+2. **Update version** in the `[workspace.package]` section of `Cargo.toml`
+3. **Create a PR** with your changes (code changes + version bump together)
+4. **Merge the PR** - This triggers the automated release pipeline:
    - Detects version change in `Cargo.toml`
    - Runs full test suite (tests, clippy, formatting)
    - Builds release binaries for Windows and Linux

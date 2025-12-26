@@ -241,13 +241,22 @@ Follow [Semantic Versioning](https://semver.org/):
 
 **Wintun Download Fails (Windows)**
 - Solution: Check if wintun.net is accessible
-- Verify URL is correct in workflow file
+- Verify the Wintun configuration in `.github/workflows/auto-release.yml`:
+  - `WINTUN_VERSION` environment variable (top of file)
+  - `WINTUN_SHA256` environment variable (top of file)
 - The workflow includes SHA256 checksum verification for security
 
 **"Checksum verification failed"**
 - Solution: The downloaded Wintun archive doesn't match the expected checksum
-- Update the `expectedHash` in the workflow if Wintun version was updated
+- When updating Wintun version, both `WINTUN_VERSION` and `WINTUN_SHA256` must be updated in sync
+- These are defined in the `env:` section at the top of `.github/workflows/auto-release.yml`
+- Get the correct SHA256 from [Wintun downloads](https://www.wintun.net/)
 - This is a security feature to prevent tampered downloads
+
+**"Tag already exists"**
+- Solution: The version tag has already been created
+- Increment the version number in `[workspace.package]` section of `Cargo.toml`
+- The workflow will fail to prevent duplicate releases
 
 ## Security Considerations
 
