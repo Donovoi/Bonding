@@ -1,14 +1,10 @@
-name: Auto Release on PR Merge
+name: Auto Tag (Semver) on Push
 
 on:
   push:
     branches:
       - main
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".gitignore"
-      - "LICENSE-*"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,298 +13,98 @@ env:
 
 permissions:
   contents: write
-  pull-requests: read
+
+concurrency:
+  group: semver-tag
+  cancel-in-progress: false
 
 jobs:
-  check-version:
-    name: Check for Version Change
+  tag:
+    name: Create and push version tag
+    # Avoid any future recursion if we ever add a bot-commit step.
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    outputs:
-      version_changed: ${{ steps.version_check.outputs.changed }}
-      new_version: ${{ steps.version_check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Check if version changed
-        id: version_check
+      - name: Compute next version tag
+        id: semver
+        shell: bash
         run: |
-          # Extract current workspace version from Cargo.toml
-          # Looks for version line in [workspace.package] section only
-          CURRENT_VERSION=$(awk '
-            /^\[workspace\.package\]/ { in_section=1; next }
-            /^\[/ { in_section=0 }
-            in_section && /^version/ { gsub(/"/, "", $3); print $3; exit }
-          ' Cargo.toml)
-          echo "Current version: $CURRENT_VERSION"
+          set -euo pipefail
 
-          # Check if workspace version changed in last commit
-          # Gets old and new versions from the workspace.package section
-          OLD_VERSION=$(git show HEAD~1:Cargo.toml | awk '
-            /^\[workspace\.package\]/ { in_section=1; next }
-            /^\[/ { in_section=0 }
-            in_section && /^version/ { gsub(/"/, "", $3); print $3; exit }
-          ')
+          msg="$(git log -1 --pretty=%B)"
+          echo "Commit message:"$'\n'"$msg"$'\n'
 
-          if [ "$OLD_VERSION" != "$CURRENT_VERSION" ]; then
-            VERSION_CHANGED=true
-            echo "Version changed: $OLD_VERSION → $CURRENT_VERSION"
-          else
-            VERSION_CHANGED=false
+          bump="patch"
+          if echo "$msg" | grep -qiE 'BREAKING CHANGE|(^|\n).*!:|(^|\n)feat!'; then
+            bump="major"
+          elif echo "$msg" | grep -qiE '(^|\n)feat(\(.+\))?:'; then
+            bump="minor"
+          elif echo "$msg" | grep -qiE '(^|\n)fix(\(.+\))?:'; then
+            bump="patch"
           fi
+          echo "Bump: $bump"
 
-          echo "changed=$VERSION_CHANGED" >> $GITHUB_OUTPUT
-          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-
-          if [ "$VERSION_CHANGED" = "true" ]; then
-            echo "✓ Version changed to $CURRENT_VERSION"
-          else
-            echo "✗ Version did not change"
-          fi
-
-  test:
-    name: Run Tests
-    needs: check-version
-    if: needs.check-version.outputs.version_changed == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        rust: [stable]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Run tests
-        run: cargo test --all --verbose
-
-      - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-  build-and-release:
-    name: Build and Create Release
-    needs: [check-version, test]
-    if: needs.check-version.outputs.version_changed == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            os_name: windows
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            os_name: linux
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
-
-      - name: Download and prepare Wintun DLL (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          # Download Wintun
-          $wintunVersion = "${{ env.WINTUN_VERSION }}"
-          $wintunUrl = "https://www.wintun.net/builds/wintun-$wintunVersion.zip"
-          $wintunZip = "wintun.zip"
-          $expectedHash = "${{ env.WINTUN_SHA256 }}"
-
-          Write-Host "Downloading Wintun $wintunVersion..."
-          Invoke-WebRequest -Uri $wintunUrl -OutFile $wintunZip
-
-          # Verify checksum for security
-          Write-Host "Verifying checksum..."
-          $actualHash = (Get-FileHash -Path $wintunZip -Algorithm SHA256).Hash.ToLower()
-          if ($actualHash -ne $expectedHash) {
-            Write-Error "Checksum verification failed! Expected: $expectedHash, Got: $actualHash"
-            exit 1
-          }
-          Write-Host "✓ Checksum verified successfully"
-
-          # Extract and organize DLLs
-          Write-Host "Extracting Wintun..."
-          Expand-Archive -Path $wintunZip -DestinationPath wintun-temp
-
-          # Create resources directory
-          New-Item -ItemType Directory -Force -Path resources
-
-          # Copy and rename DLLs for each architecture
-          Copy-Item "wintun-temp/wintun/bin/amd64/wintun.dll" "resources/wintun_amd64.dll"
-          Copy-Item "wintun-temp/wintun/bin/x86/wintun.dll" "resources/wintun_x86.dll"
-          Copy-Item "wintun-temp/wintun/bin/arm64/wintun.dll" "resources/wintun_arm64.dll"
-          Copy-Item "wintun-temp/wintun/bin/arm/wintun.dll" "resources/wintun_arm.dll"
-
-          Write-Host "Wintun DLLs prepared in resources directory"
-
-          # Clean up
-          Remove-Item -Recurse -Force wintun-temp
-          Remove-Item $wintunZip
-
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p bonding-client -p bonding-server --verbose
-
-      - name: Package (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $target = "${{ matrix.target }}"
-
-          $packages = @(
-            @{ Name = "bonding-client"; Binary = "bonding-client.exe"; Archive = "bonding-client-windows-$target.zip" },
-            @{ Name = "bonding-server"; Binary = "bonding-server.exe"; Archive = "bonding-server-windows-$target.zip" }
-          )
-
-          foreach ($p in $packages) {
-            if (Test-Path "package") { Remove-Item -Recurse -Force "package" }
-            New-Item -ItemType Directory -Force -Path package | Out-Null
-
-            $binPath = "target/$target/release/$($p.Binary)"
-            if (-not (Test-Path $binPath)) {
-              Write-Error "Expected binary not found: $binPath"
-              exit 1
-            }
-            Copy-Item $binPath package/
-
-            if (Test-Path "README.md") { Copy-Item "README.md" package/ }
-            if (Test-Path "LICENSE-MIT") { Copy-Item "LICENSE-MIT" package/ }
-            if (Test-Path "LICENSE-APACHE") { Copy-Item "LICENSE-APACHE" package/ }
-
-            if (Test-Path $p.Archive) { Remove-Item -Force $p.Archive }
-            Compress-Archive -Path package/* -DestinationPath $p.Archive
-            Write-Host "Created archive: $($p.Archive)"
-          }
-
-      - name: Package (Linux)
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          target="${{ matrix.target }}"
-
-          for bin in bonding-client bonding-server; do
-            archive_name="${bin}-linux-${target}.tar.gz"
-
-            rm -rf package
-            mkdir -p package
-
-            if [ ! -f "target/${target}/release/${bin}" ]; then
-              echo "Expected binary not found: target/${target}/release/${bin}" >&2
+          latest_tag="$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+          if [ -z "$latest_tag" ]; then
+            cargo_ver="$(awk '
+              /^\[workspace\.package\]/ { in_section=1; next }
+              /^\[/ { in_section=0 }
+              in_section && /^version[[:space:]]*=/ {
+                gsub(/"/, "", $3);
+                print $3;
+                exit
+              }
+            ' Cargo.toml)"
+            if [ -z "$cargo_ver" ]; then
+              echo "::error::Could not find a previous vX.Y.Z tag and could not read [workspace.package].version from Cargo.toml"
               exit 1
             fi
-            cp "target/${target}/release/${bin}" package/
+            latest_tag="v$cargo_ver"
+          fi
 
-            [ -f README.md ] && cp README.md package/
-            [ -f LICENSE-MIT ] && cp LICENSE-MIT package/
-            [ -f LICENSE-APACHE ] && cp LICENSE-APACHE package/
+          base="${latest_tag#v}"
+          IFS='.' read -r major minor patch <<< "$base"
 
-            tar -czf "${archive_name}" -C package .
-            echo "Created archive: ${archive_name}"
+          case "$bump" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+          esac
+
+          next="v${major}.${minor}.${patch}"
+
+          # Ensure uniqueness in case of races or manual tags.
+          while git rev-parse -q --verify "refs/tags/$next" >/dev/null; do
+            patch=$((patch + 1))
+            next="v${major}.${minor}.${patch}"
           done
 
-      - name: Upload Release Asset
-        uses: actions/upload-artifact@v4
-        with:
-          name: bonding-${{ matrix.os_name }}-${{ matrix.target }}
-          path: |
-            ./bonding-client-${{ matrix.os_name }}-${{ matrix.target }}.*
-            ./bonding-server-${{ matrix.os_name }}-${{ matrix.target }}.*
+          echo "next_tag=$next" >> "$GITHUB_OUTPUT"
+          echo "Next tag: $next"
 
-  create-release:
-    name: Create GitHub Release
-    needs: [check-version, build-and-release]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Create Release Tag
-        id: create_tag
+      - name: Create and push tag
+        shell: bash
         run: |
-          VERSION="v${{ needs.check-version.outputs.new_version }}"
-          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          tag="${{ steps.semver.outputs.next_tag }}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Check if tag already exists (locally or remotely)
-          if git ls-remote --tags origin | grep -q "refs/tags/$VERSION$"; then
-            echo "::error::Tag $VERSION already exists! Cannot create duplicate release."
-            echo "::error::If you need to release again, increment the version number."
-            exit 1
-          fi
+          git tag -a "$tag" -m "Release $tag" "${GITHUB_SHA}"
+          git push origin "$tag"
 
-          # Create and push tag
-          git tag -a "$VERSION" -m "Release $VERSION"
-          git push origin "$VERSION"
-          echo "✓ Created and pushed tag $VERSION"
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.create_tag.outputs.tag }}
-          name: Release ${{ steps.create_tag.outputs.tag }}
-          files: artifacts/**/*
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          body: |
-            ## Release ${{ steps.create_tag.outputs.tag }}
-
-            This release was automatically created after merging a pull request to the main branch.
-
-            ### Installation
-
-            **Windows:**
-            - Client: download `bonding-client-windows-x86_64-pc-windows-msvc.zip` and run `bonding-client.exe` as Administrator
-            - Server: download `bonding-server-windows-x86_64-pc-windows-msvc.zip` and run `bonding-server.exe`
-
-            **Linux:**
-            - Client: download `bonding-client-linux-x86_64-unknown-linux-gnu.tar.gz` and run `./bonding-client` (sudo may be required for TUN)
-            - Server: download `bonding-server-linux-x86_64-unknown-linux-gnu.tar.gz` and run `./bonding-server`
-
-            See the [README](https://github.com/Donovoi/Bonding/blob/main/README.md) for detailed setup instructions.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Notify Success
-        if: success()
-        run: |
-          echo "::notice::Release ${{ steps.create_tag.outputs.tag }} created successfully!"
-
-      - name: Notify Failure
-        if: failure()
-        run: |
-          echo "::error::Failed to create release ${{ steps.create_tag.outputs.tag }}"
+          echo "✓ Pushed $tag"
