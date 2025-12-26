@@ -73,14 +73,18 @@ Once triggered, the release workflow will:
 
 1. **Build for Windows (x86_64-pc-windows-msvc)**:
    - Downloads Wintun DLL v0.14.1 (SHA256 verified)
-   - Embeds DLL into `bonding-client.exe`
-   - Packages as `bonding-windows-x86_64-pc-windows-msvc.zip`
-   - Includes: executable, README.md, LICENSE-MIT, LICENSE-APACHE
+   - Builds both `bonding-client.exe` (embedded Wintun) and `bonding-server.exe`
+   - Packages separately as:
+     - `bonding-client-windows-x86_64-pc-windows-msvc.zip`
+     - `bonding-server-windows-x86_64-pc-windows-msvc.zip`
+   - Each archive includes: executable, README.md, LICENSE-MIT, LICENSE-APACHE
 
 2. **Build for Linux (x86_64-unknown-linux-gnu)**:
-   - Builds `bonding-server`
-   - Packages as `bonding-linux-x86_64-unknown-linux-gnu.tar.gz`
-   - Includes: executable, README.md, LICENSE-MIT, LICENSE-APACHE
+   - Builds both `bonding-client` and `bonding-server`
+   - Packages separately as:
+     - `bonding-client-linux-x86_64-unknown-linux-gnu.tar.gz`
+     - `bonding-server-linux-x86_64-unknown-linux-gnu.tar.gz`
+   - Each archive includes: executable, README.md, LICENSE-MIT, LICENSE-APACHE
 
 3. **Create GitHub Release**:
    - Tag: `v0.1.0`
