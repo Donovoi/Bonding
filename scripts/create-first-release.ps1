@@ -60,7 +60,15 @@ if ($gitStatus) {
 }
 
 # Show current version in Cargo.toml
-$CURRENT_VERSION = (Get-Content "Cargo.toml" | Select-String -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+# Parse the workspace.package section specifically
+$cargoContent = Get-Content "Cargo.toml" -Raw
+$workspacePackageMatch = [regex]::Match($cargoContent, '\[workspace\.package\](.*?)(?=\[|\z)', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+if ($workspacePackageMatch.Success) {
+    $versionMatch = [regex]::Match($workspacePackageMatch.Groups[1].Value, 'version\s*=\s*"([^"]+)"')
+    if ($versionMatch.Success) {
+        $CURRENT_VERSION = $versionMatch.Groups[1].Value
+    }
+}
 
 Write-Host "Current version in Cargo.toml: $CURRENT_VERSION"
 Write-Host "Creating release tag: $VERSION"
