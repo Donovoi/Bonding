@@ -381,6 +381,8 @@ This builds and opens the documentation in your browser.
 
 The project uses an automated release pipeline that triggers when pull requests are merged to the main branch.
 
+For complete details on creating and managing releases, see [RELEASE.md](RELEASE.md).
+
 ### Automated Release (Recommended)
 
 When you merge a PR that includes a version bump, the release pipeline automatically creates a release:
@@ -397,6 +399,26 @@ When you merge a PR that includes a version bump, the release pipeline automatic
    - Sends status notifications
 
 The pipeline will only trigger if the version in `Cargo.toml` changed in the merged commit.
+
+### Creating the First Release
+
+To create the first release (v0.1.0), use the provided script:
+
+**Linux/macOS:**
+```bash
+./scripts/create-first-release.sh
+```
+
+**Windows:**
+```powershell
+.\scripts\create-first-release.ps1
+```
+
+Or manually:
+```bash
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
 
 ### Manual Release (Alternative)
 
