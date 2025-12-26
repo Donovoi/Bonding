@@ -16,16 +16,17 @@ For Windows builds, place the appropriate Wintun DLL files here to embed them in
 Download the latest Wintun release from: https://www.wintun.net/
 
 The Wintun release zip contains the DLL files for each architecture in the following structure:
-```
+```text
 wintun/
-├── amd64/
-│   └── wintun.dll  (rename to wintun_amd64.dll)
-├── x86/
-│   └── wintun.dll  (rename to wintun_x86.dll)
-├── arm64/
-│   └── wintun.dll  (rename to wintun_arm64.dll)
-└── arm/
-    └── wintun.dll  (rename to wintun_arm.dll)
+├── bin/
+│   ├── amd64/
+│   │   └── wintun.dll  (rename to wintun_amd64.dll)
+│   ├── x86/
+│   │   └── wintun.dll  (rename to wintun_x86.dll)
+│   ├── arm64/
+│   │   └── wintun.dll  (rename to wintun_arm64.dll)
+│   └── arm/
+│       └── wintun.dll  (rename to wintun_arm.dll)
 ```
 
 ### Build Behavior
