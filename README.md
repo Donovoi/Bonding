@@ -198,7 +198,7 @@ Contributions are welcome! Please ensure:
   - Create a GitHub Release with artifacts
   - Generate release notes automatically
 
-See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed contribution guidelines and release workflow.
+See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed contribution guidelines and [RELEASE.md](docs/RELEASE.md) for the complete release process.
 
 ## License
 
