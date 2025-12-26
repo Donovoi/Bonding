@@ -1,8 +1,9 @@
 use crate::config as cfg_io;
 use crate::runtime;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use bonding_core::control::ServerConfig;
 use crossterm::{
+    cursor::{Hide, Show},
     event::{self, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -61,11 +62,34 @@ pub async fn run(config_path: PathBuf, config: ServerConfig) -> Result<()> {
         Option::<tokio::task::JoinHandle<()>>::None,
     )));
 
-    tokio::task::spawn_blocking(move || ui_loop(handle, state, runner, stop_rx))
+    tokio::task::spawn_blocking(move || run_ui_blocking(handle, state, runner, stop_rx))
         .await
-        .context("UI task panicked")??;
+        .context("UI task join failed")??;
 
     Ok(())
+}
+
+fn run_ui_blocking(
+    handle: Handle,
+    state: Arc<Mutex<UiState>>,
+    runner: Arc<Mutex<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)>>,
+    stop_rx: watch::Receiver<bool>,
+) -> Result<()> {
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ui_loop(handle, state, runner, stop_rx)
+    }));
+
+    std::panic::set_hook(prev_hook);
+
+    match res {
+        Ok(r) => r,
+        Err(_) => Err(anyhow!(
+            "UI panicked (terminal restored). Try `bonding-server run` if the UI keeps failing."
+        )),
+    }
 }
 
 fn ui_loop(
@@ -74,14 +98,25 @@ fn ui_loop(
     runner: Arc<Mutex<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)>>,
     stop_rx: watch::Receiver<bool>,
 ) -> Result<()> {
-    let mut terminal = setup_terminal()?;
+    let (mut terminal, _cleanup) = setup_terminal()?;
 
     let mut tick = std::time::Instant::now();
 
     loop {
-        terminal.draw(|f| {
-            let s = state.lock().unwrap();
+        // Snapshot state outside the draw closure so we can handle errors here.
+        let (running, config_path, cfg, logs_snapshot) = {
+            let s = state
+                .lock()
+                .map_err(|_| anyhow!("UI state lock poisoned"))?;
+            (
+                s.running,
+                s.config_path.clone(),
+                s.config.clone(),
+                s.logs.clone(),
+            )
+        };
 
+        terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -101,13 +136,9 @@ fn ui_loop(
                 ),
                 Span::raw("  |  "),
                 Span::styled(
-                    if s.running { "RUNNING" } else { "STOPPED" },
+                    if running { "RUNNING" } else { "STOPPED" },
                     Style::default()
-                        .fg(if s.running {
-                            Color::Green
-                        } else {
-                            Color::Yellow
-                        })
+                        .fg(if running { Color::Green } else { Color::Yellow })
                         .add_modifier(Modifier::BOLD),
                 ),
             ]))
@@ -115,13 +146,10 @@ fn ui_loop(
             f.render_widget(title, chunks[0]);
 
             let cfg_text = Text::from(vec![
-                Line::from(format!("Config: {}", s.config_path.display())),
-                Line::from(format!(
-                    "Bind: {}:{}",
-                    s.config.listen_addr, s.config.listen_port
-                )),
-                Line::from(format!("Encryption: {}", s.config.enable_encryption)),
-                Line::from(format!("Health interval: {:?}", s.config.health_interval)),
+                Line::from(format!("Config: {}", config_path.display())),
+                Line::from(format!("Bind: {}:{}", cfg.listen_addr, cfg.listen_port)),
+                Line::from(format!("Encryption: {}", cfg.enable_encryption)),
+                Line::from(format!("Health interval: {:?}", cfg.health_interval)),
             ]);
 
             let cfg_widget = Paragraph::new(cfg_text)
@@ -133,8 +161,7 @@ fn ui_loop(
                 .wrap(Wrap { trim: true });
             f.render_widget(cfg_widget, chunks[1]);
 
-            let log_lines: Vec<Line> = s
-                .logs
+            let log_lines: Vec<Line> = logs_snapshot
                 .iter()
                 .rev()
                 .take(200)
@@ -158,27 +185,41 @@ fn ui_loop(
                 match key.code {
                     KeyCode::Char('q') => break,
                     KeyCode::Char('r') => {
-                        let path = { state.lock().unwrap().config_path.clone() };
+                        let path = {
+                            state
+                                .lock()
+                                .map_err(|_| anyhow!("UI state lock poisoned"))?
+                                .config_path
+                                .clone()
+                        };
                         match cfg_io::load(&path) {
                             Ok(new_cfg) => {
-                                let mut s = state.lock().unwrap();
+                                let mut s = state
+                                    .lock()
+                                    .map_err(|_| anyhow!("UI state lock poisoned"))?;
                                 s.config = new_cfg;
                                 s.push_log("Config reloaded".to_string());
                             }
                             Err(e) => {
-                                let mut s = state.lock().unwrap();
+                                let mut s = state
+                                    .lock()
+                                    .map_err(|_| anyhow!("UI state lock poisoned"))?;
                                 s.push_log(format!("Failed to reload config: {e}"));
                             }
                         }
                     }
                     KeyCode::Char('s') => {
-                        let mut runner_guard = runner.lock().unwrap();
+                        let mut runner_guard = runner
+                            .lock()
+                            .map_err(|_| anyhow!("UI runner lock poisoned"))?;
                         let (ref stop_tx, ref mut handle_opt) = *runner_guard;
 
                         if handle_opt.is_some() {
                             let _ = stop_tx.send(true);
                             {
-                                let mut s = state.lock().unwrap();
+                                let mut s = state
+                                    .lock()
+                                    .map_err(|_| anyhow!("UI state lock poisoned"))?;
                                 s.running = false;
                                 s.push_log("Stopping...".to_string());
                             }
@@ -187,11 +228,19 @@ fn ui_loop(
                             }
                             let _ = stop_tx.send(false);
                             {
-                                let mut s = state.lock().unwrap();
+                                let mut s = state
+                                    .lock()
+                                    .map_err(|_| anyhow!("UI state lock poisoned"))?;
                                 s.push_log("Stopped".to_string());
                             }
                         } else {
-                            let cfg = { state.lock().unwrap().config.clone() };
+                            let cfg = {
+                                state
+                                    .lock()
+                                    .map_err(|_| anyhow!("UI state lock poisoned"))?
+                                    .config
+                                    .clone()
+                            };
                             let state2 = state.clone();
                             let stop_rx2 = stop_rx.clone();
                             let task = handle.spawn(async move {
@@ -210,7 +259,9 @@ fn ui_loop(
                             });
                             *handle_opt = Some(task);
 
-                            let mut s = state.lock().unwrap();
+                            let mut s = state
+                                .lock()
+                                .map_err(|_| anyhow!("UI state lock poisoned"))?;
                             s.running = true;
                             s.push_log("Started".to_string());
                         }
@@ -225,22 +276,26 @@ fn ui_loop(
         }
     }
 
-    teardown_terminal(&mut terminal)?;
     Ok(())
 }
 
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+struct TerminalCleanup;
+
+impl Drop for TerminalCleanup {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let mut stdout = io::stdout();
+        let _ = execute!(stdout, LeaveAlternateScreen, Show);
+    }
+}
+
+fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, TerminalCleanup)> {
     enable_raw_mode().context("enable_raw_mode")?;
+    let cleanup = TerminalCleanup;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("EnterAlternateScreen")?;
+    execute!(stdout, EnterAlternateScreen, Hide).context("EnterAlternateScreen")?;
     let backend = CrosstermBackend::new(stdout);
-    let terminal = Terminal::new(backend).context("create Terminal")?;
-    Ok(terminal)
-}
-
-fn teardown_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
-    disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
-    terminal.show_cursor().ok();
-    Ok(())
+    let mut terminal = Terminal::new(backend).context("create Terminal")?;
+    terminal.clear().ok();
+    Ok((terminal, cleanup))
 }
