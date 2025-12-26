@@ -102,17 +102,24 @@ Examples:
 
 Each release includes:
 
-### Windows Build
-- `bonding-windows-x86_64-pc-windows-msvc.zip`
-  - Contains: `bonding-client.exe` with embedded Wintun DLL
-  - Platform: Windows 11 (x86_64)
-  - No additional DLL installation required
+### Windows Builds (x86_64)
+- `bonding-client-windows-x86_64-pc-windows-msvc.zip`
+   - Contains: `bonding-client.exe` (with embedded Wintun DLL)
+   - Platform: Windows (x86_64)
+   - No additional DLL installation required for release builds
+- `bonding-server-windows-x86_64-pc-windows-msvc.zip`
+   - Contains: `bonding-server.exe`
+   - Platform: Windows (x86_64)
 
-### Linux Build
-- `bonding-linux-x86_64-unknown-linux-gnu.tar.gz`
-  - Contains: `bonding-server`
-  - Platform: Linux (x86_64)
-  - Requires: TUN/TAP support
+### Linux Builds (x86_64, Debian-based)
+- `bonding-client-linux-x86_64-unknown-linux-gnu.tar.gz`
+   - Contains: `bonding-client`
+   - Platform: Linux (x86_64)
+   - May require: TUN/TAP support depending on configuration
+- `bonding-server-linux-x86_64-unknown-linux-gnu.tar.gz`
+   - Contains: `bonding-server`
+   - Platform: Linux (x86_64)
+   - Requires: TUN/TAP support (when server logic is implemented)
 
 ### Additional Files
 - `README.md`: Project documentation
@@ -142,8 +149,8 @@ Each release includes:
    - DLLs embedded for all architectures (amd64, x86, arm64, arm)
 4. **Build binaries** with `cargo build --release`
 5. **Package artifacts**:
-   - Windows: ZIP archive
-   - Linux: TAR.GZ archive
+   - Windows: separate ZIP archives (client + server)
+   - Linux: separate TAR.GZ archives (client + server)
 6. **Create GitHub Release** with auto-generated notes
 
 ### Monitoring Releases

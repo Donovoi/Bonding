@@ -101,8 +101,10 @@ This workflow automates the release process when a PR with a version bump is mer
   - Send status notifications
 
 **Artifacts:**
-- `bonding-windows-x86_64-pc-windows-msvc.zip` - Windows client with embedded Wintun
-- `bonding-linux-x86_64-unknown-linux-gnu.tar.gz` - Linux server binary
+- `bonding-client-windows-x86_64-pc-windows-msvc.zip` - Windows client (embedded Wintun)
+- `bonding-server-windows-x86_64-pc-windows-msvc.zip` - Windows server
+- `bonding-client-linux-x86_64-unknown-linux-gnu.tar.gz` - Linux client
+- `bonding-server-linux-x86_64-unknown-linux-gnu.tar.gz` - Linux server
 
 ## Manual Release Workflow
 

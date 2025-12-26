@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 env:
@@ -25,13 +25,13 @@ jobs:
         target: [x86_64-pc-windows-msvc]
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-      
+
       - name: Download and prepare Wintun DLL
         shell: pwsh
         run: |
@@ -72,41 +72,56 @@ jobs:
           # Clean up
           Remove-Item -Recurse -Force wintun-temp
           Remove-Item $wintunZip
-      
+
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --verbose
-      
+        run: cargo build --release --target ${{ matrix.target }} -p bonding-client -p bonding-server --verbose
+
       - name: Package
         shell: pwsh
         run: |
           $target = "${{ matrix.target }}"
-          $archiveName = "bonding-windows-$target.zip"
-          
-          # Create package directory
-          New-Item -ItemType Directory -Force -Path package
-          
-          # Copy binary
-          Copy-Item "target/$target/release/bonding-client.exe" package/
-          
-          # Copy README and LICENSE files
-          if (Test-Path "README.md") { Copy-Item "README.md" package/ }
-          if (Test-Path "LICENSE-MIT") { Copy-Item "LICENSE-MIT" package/ }
-          if (Test-Path "LICENSE-APACHE") { Copy-Item "LICENSE-APACHE" package/ }
-          
-          # Create archive
-          Compress-Archive -Path package/* -DestinationPath $archiveName
-          
-          Write-Host "Created archive: $archiveName"
-      
-      - name: Upload Release Asset
+
+          $packages = @(
+            @{ Name = "bonding-client"; Binary = "bonding-client.exe"; Archive = "bonding-client-windows-$target.zip" },
+            @{ Name = "bonding-server"; Binary = "bonding-server.exe"; Archive = "bonding-server-windows-$target.zip" }
+          )
+
+          foreach ($p in $packages) {
+            # Clean and create package directory
+            if (Test-Path "package") { Remove-Item -Recurse -Force "package" }
+            New-Item -ItemType Directory -Force -Path package | Out-Null
+
+            # Copy binary
+            $binPath = "target/$target/release/$($p.Binary)"
+            if (-not (Test-Path $binPath)) {
+              Write-Error "Expected binary not found: $binPath"
+              exit 1
+            }
+            Copy-Item $binPath package/
+
+            # Copy README and LICENSE files
+            if (Test-Path "README.md") { Copy-Item "README.md" package/ }
+            if (Test-Path "LICENSE-MIT") { Copy-Item "LICENSE-MIT" package/ }
+            if (Test-Path "LICENSE-APACHE") { Copy-Item "LICENSE-APACHE" package/ }
+
+            # Create archive
+            if (Test-Path $p.Archive) { Remove-Item -Force $p.Archive }
+            Compress-Archive -Path package/* -DestinationPath $p.Archive
+
+            Write-Host "Created archive: $($p.Archive)"
+          }
+
+      - name: Upload Release Assets
         uses: actions/upload-artifact@v4
         with:
           name: bonding-windows-${{ matrix.target }}
-          path: ./bonding-windows-${{ matrix.target }}.zip
+          path: |
+            ./bonding-client-windows-${{ matrix.target }}.zip
+            ./bonding-server-windows-${{ matrix.target }}.zip
 
   build-linux:
     name: Build Linux
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     permissions:
       contents: read
     strategy:
@@ -114,42 +129,51 @@ jobs:
         target: [x86_64-unknown-linux-gnu]
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-      
+
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --verbose
-      
+        run: cargo build --release --target ${{ matrix.target }} -p bonding-client -p bonding-server --verbose
+
       - name: Package
         run: |
           target="${{ matrix.target }}"
-          archive_name="bonding-linux-${target}.tar.gz"
-          
-          # Create package directory
-          mkdir -p package
-          
-          # Copy binary
-          cp "target/${target}/release/bonding-server" package/
-          
-          # Copy README and LICENSE files
-          [ -f README.md ] && cp README.md package/
-          [ -f LICENSE-MIT ] && cp LICENSE-MIT package/
-          [ -f LICENSE-APACHE ] && cp LICENSE-APACHE package/
-          
-          # Create archive
-          tar -czf "${archive_name}" -C package .
-          
-          echo "Created archive: ${archive_name}"
-      
-      - name: Upload Release Asset
+
+          for bin in bonding-client bonding-server; do
+            archive_name="${bin}-linux-${target}.tar.gz"
+
+            rm -rf package
+            mkdir -p package
+
+            # Copy binary
+            if [ ! -f "target/${target}/release/${bin}" ]; then
+              echo "Expected binary not found: target/${target}/release/${bin}" >&2
+              exit 1
+            fi
+            cp "target/${target}/release/${bin}" package/
+
+            # Copy README and LICENSE files
+            [ -f README.md ] && cp README.md package/
+            [ -f LICENSE-MIT ] && cp LICENSE-MIT package/
+            [ -f LICENSE-APACHE ] && cp LICENSE-APACHE package/
+
+            # Create archive
+            tar -czf "${archive_name}" -C package .
+
+            echo "Created archive: ${archive_name}"
+          done
+
+      - name: Upload Release Assets
         uses: actions/upload-artifact@v4
         with:
           name: bonding-linux-${{ matrix.target }}
-          path: ./bonding-linux-${{ matrix.target }}.tar.gz
+          path: |
+            ./bonding-client-linux-${{ matrix.target }}.tar.gz
+            ./bonding-server-linux-${{ matrix.target }}.tar.gz
 
   release:
     name: Create Release
@@ -160,12 +184,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-      
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:

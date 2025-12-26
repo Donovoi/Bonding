@@ -5,10 +5,10 @@ on:
     branches:
       - main
     paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE-*'
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - "LICENSE-*"
 
 env:
   CARGO_TERM_COLOR: always
@@ -121,10 +121,10 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            asset_name: bonding-windows
-          - os: ubuntu-latest
+            os_name: windows
+          - os: ubuntu-20.04
             target: x86_64-unknown-linux-gnu
-            asset_name: bonding-linux
+            os_name: linux
     steps:
       - uses: actions/checkout@v4
 
@@ -176,59 +176,71 @@ jobs:
           Remove-Item $wintunZip
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --verbose
+        run: cargo build --release --target ${{ matrix.target }} -p bonding-client -p bonding-server --verbose
 
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           $target = "${{ matrix.target }}"
-          $archiveName = "${{ matrix.asset_name }}-${{ matrix.target }}.zip"
 
-          # Create package directory
-          New-Item -ItemType Directory -Force -Path package
+          $packages = @(
+            @{ Name = "bonding-client"; Binary = "bonding-client.exe"; Archive = "bonding-client-windows-$target.zip" },
+            @{ Name = "bonding-server"; Binary = "bonding-server.exe"; Archive = "bonding-server-windows-$target.zip" }
+          )
 
-          # Copy binary
-          Copy-Item "target/$target/release/bonding-client.exe" package/
+          foreach ($p in $packages) {
+            if (Test-Path "package") { Remove-Item -Recurse -Force "package" }
+            New-Item -ItemType Directory -Force -Path package | Out-Null
 
-          # Copy README and LICENSE files
-          if (Test-Path "README.md") { Copy-Item "README.md" package/ }
-          if (Test-Path "LICENSE-MIT") { Copy-Item "LICENSE-MIT" package/ }
-          if (Test-Path "LICENSE-APACHE") { Copy-Item "LICENSE-APACHE" package/ }
+            $binPath = "target/$target/release/$($p.Binary)"
+            if (-not (Test-Path $binPath)) {
+              Write-Error "Expected binary not found: $binPath"
+              exit 1
+            }
+            Copy-Item $binPath package/
 
-          # Create archive
-          Compress-Archive -Path package/* -DestinationPath $archiveName
+            if (Test-Path "README.md") { Copy-Item "README.md" package/ }
+            if (Test-Path "LICENSE-MIT") { Copy-Item "LICENSE-MIT" package/ }
+            if (Test-Path "LICENSE-APACHE") { Copy-Item "LICENSE-APACHE" package/ }
 
-          Write-Host "Created archive: $archiveName"
+            if (Test-Path $p.Archive) { Remove-Item -Force $p.Archive }
+            Compress-Archive -Path package/* -DestinationPath $p.Archive
+            Write-Host "Created archive: $($p.Archive)"
+          }
 
       - name: Package (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-20.04'
         run: |
           target="${{ matrix.target }}"
-          archive_name="${{ matrix.asset_name }}-${target}.tar.gz"
 
-          # Create package directory
-          mkdir -p package
+          for bin in bonding-client bonding-server; do
+            archive_name="${bin}-linux-${target}.tar.gz"
 
-          # Copy binary
-          cp "target/${target}/release/bonding-server" package/
+            rm -rf package
+            mkdir -p package
 
-          # Copy README and LICENSE files
-          [ -f README.md ] && cp README.md package/
-          [ -f LICENSE-MIT ] && cp LICENSE-MIT package/
-          [ -f LICENSE-APACHE ] && cp LICENSE-APACHE package/
+            if [ ! -f "target/${target}/release/${bin}" ]; then
+              echo "Expected binary not found: target/${target}/release/${bin}" >&2
+              exit 1
+            fi
+            cp "target/${target}/release/${bin}" package/
 
-          # Create archive
-          tar -czf "${archive_name}" -C package .
+            [ -f README.md ] && cp README.md package/
+            [ -f LICENSE-MIT ] && cp LICENSE-MIT package/
+            [ -f LICENSE-APACHE ] && cp LICENSE-APACHE package/
 
-          echo "Created archive: ${archive_name}"
+            tar -czf "${archive_name}" -C package .
+            echo "Created archive: ${archive_name}"
+          done
 
       - name: Upload Release Asset
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}-${{ matrix.target }}
+          name: bonding-${{ matrix.os_name }}-${{ matrix.target }}
           path: |
-            ./${{ matrix.asset_name }}-${{ matrix.target }}.*
+            ./bonding-client-${{ matrix.os_name }}-${{ matrix.target }}.*
+            ./bonding-server-${{ matrix.os_name }}-${{ matrix.target }}.*
 
   create-release:
     name: Create GitHub Release
@@ -280,12 +292,12 @@ jobs:
             ### Installation
 
             **Windows:**
-            - Download `bonding-windows-x86_64-pc-windows-msvc.zip`
-            - Extract and run `bonding-client.exe` as Administrator
+            - Client: download `bonding-client-windows-x86_64-pc-windows-msvc.zip` and run `bonding-client.exe` as Administrator
+            - Server: download `bonding-server-windows-x86_64-pc-windows-msvc.zip` and run `bonding-server.exe`
 
             **Linux:**
-            - Download `bonding-linux-x86_64-unknown-linux-gnu.tar.gz`
-            - Extract and run `./bonding-server` with sudo
+            - Client: download `bonding-client-linux-x86_64-unknown-linux-gnu.tar.gz` and run `./bonding-client` (sudo may be required for TUN)
+            - Server: download `bonding-server-linux-x86_64-unknown-linux-gnu.tar.gz` and run `./bonding-server`
 
             See the [README](https://github.com/Donovoi/Bonding/blob/main/README.md) for detailed setup instructions.
         env:
