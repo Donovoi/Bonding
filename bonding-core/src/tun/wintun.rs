@@ -13,8 +13,6 @@
 //!
 //! This module is Windows-only and will not compile on other platforms.
 
-#![cfg(target_os = "windows")]
-
 use super::TunDevice;
 use std::io;
 use std::sync::Arc;
@@ -120,12 +118,7 @@ impl WintunDevice {
         // Start a session using the maximum ring buffer capacity supported by Wintun
         let session = adapter
             .start_session(wintun::MAX_RING_CAPACITY)
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Failed to start Wintun session: {}", e),
-                )
-            })?;
+            .map_err(|e| io::Error::other(format!("Failed to start Wintun session: {}", e)))?;
 
         tracing::info!(
             "Created Wintun adapter '{}' with MTU {}",
@@ -182,10 +175,7 @@ impl TunDevice for WintunDevice {
                         io::ErrorKind::ConnectionAborted,
                         "Wintun session is shutting down",
                     )),
-                    _ => Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("Wintun error: {}", e),
-                    )),
+                    _ => Err(io::Error::other(format!("Wintun error: {}", e))),
                 }
             }
         }

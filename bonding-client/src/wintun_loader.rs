@@ -13,8 +13,6 @@
 //! - aarch64: wintun_arm64.dll
 //! - arm: wintun_arm.dll
 
-#![cfg(target_os = "windows")]
-
 use std::fs;
 use std::io;
 use std::path::PathBuf;

@@ -24,6 +24,10 @@ use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
+type RunnerJoinHandle = tokio::task::JoinHandle<()>;
+type RunnerState = (watch::Sender<bool>, Option<RunnerJoinHandle>);
+type SharedRunner = Arc<Mutex<RunnerState>>;
+
 struct UiState {
     config_path: PathBuf,
     config: ServerConfig,
@@ -57,10 +61,7 @@ pub async fn run(config_path: PathBuf, config: ServerConfig) -> Result<()> {
     }
 
     let (stop_tx, stop_rx) = watch::channel(false);
-    let runner = Arc::new(Mutex::new((
-        stop_tx,
-        Option::<tokio::task::JoinHandle<()>>::None,
-    )));
+    let runner: SharedRunner = Arc::new(Mutex::new((stop_tx, None)));
 
     tokio::task::spawn_blocking(move || run_ui_blocking(handle, state, runner, stop_rx))
         .await
@@ -72,7 +73,7 @@ pub async fn run(config_path: PathBuf, config: ServerConfig) -> Result<()> {
 fn run_ui_blocking(
     handle: Handle,
     state: Arc<Mutex<UiState>>,
-    runner: Arc<Mutex<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)>>,
+    runner: SharedRunner,
     stop_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     let prev_hook = std::panic::take_hook();
@@ -95,7 +96,7 @@ fn run_ui_blocking(
 fn ui_loop(
     handle: Handle,
     state: Arc<Mutex<UiState>>,
-    runner: Arc<Mutex<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)>>,
+    runner: SharedRunner,
     stop_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     let (mut terminal, _cleanup) = setup_terminal()?;
@@ -224,7 +225,7 @@ fn ui_loop(
                                 s.push_log("Stopping...".to_string());
                             }
                             if let Some(h) = handle_opt.take() {
-                                let _ = handle.block_on(async { h.await });
+                                let _ = handle.block_on(h);
                             }
                             let _ = stop_tx.send(false);
                             {
