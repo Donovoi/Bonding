@@ -45,7 +45,10 @@ pub fn ensure_wintun_dll() -> io::Result<PathBuf> {
         if let Some(exe_dir) = exe_path.parent() {
             let dll_path = exe_dir.join("wintun.dll");
             if dll_path.exists() {
-                tracing::debug!("Found wintun.dll in executable directory: {}", dll_path.display());
+                tracing::debug!(
+                    "Found wintun.dll in executable directory: {}",
+                    dll_path.display()
+                );
                 return Ok(dll_path);
             }
         }
@@ -53,25 +56,44 @@ pub fn ensure_wintun_dll() -> io::Result<PathBuf> {
 
     // If not found, try to extract the embedded DLL
     if let Some(embedded_dll) = EMBEDDED_WINTUN_DLL {
-        tracing::info!("Extracting embedded wintun.dll ({} bytes)", embedded_dll.len());
-        
+        tracing::info!(
+            "Extracting embedded wintun.dll ({} bytes)",
+            embedded_dll.len()
+        );
+
         // Extract to the executable directory
-        let exe_path = std::env::current_exe()
-            .map_err(|e| io::Error::new(io::ErrorKind::NotFound, 
-                format!("Failed to get executable path: {}", e)))?;
-        
-        let exe_dir = exe_path.parent()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, 
-                "Failed to get executable directory"))?;
-        
+        let exe_path = std::env::current_exe().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Failed to get executable path: {}", e),
+            )
+        })?;
+
+        let exe_dir = exe_path.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Failed to get executable directory",
+            )
+        })?;
+
         let dll_path = exe_dir.join("wintun.dll");
-        
+
         // Write the embedded DLL to disk
-        fs::write(&dll_path, embedded_dll)
-            .map_err(|e| io::Error::new(e.kind(), 
-                format!("Failed to extract wintun.dll to {}: {}", dll_path.display(), e)))?;
-        
-        tracing::info!("Successfully extracted wintun.dll to {}", dll_path.display());
+        fs::write(&dll_path, embedded_dll).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to extract wintun.dll to {}: {}",
+                    dll_path.display(),
+                    e
+                ),
+            )
+        })?;
+
+        tracing::info!(
+            "Successfully extracted wintun.dll to {}",
+            dll_path.display()
+        );
         return Ok(dll_path);
     }
 
@@ -93,7 +115,7 @@ mod tests {
         // 2. The DLL is embedded in the binary
         // It will fail if neither condition is met, which is expected in development
         let result = ensure_wintun_dll();
-        
+
         match result {
             Ok(path) => {
                 println!("Wintun DLL available at: {}", path.display());

@@ -1,0 +1,6 @@
+# This file ensures the resources directory is tracked by git even when empty
+# Place wintun DLL files here for embedding:
+# - wintun_amd64.dll
+# - wintun_x86.dll
+# - wintun_arm64.dll
+# - wintun_arm.dll
