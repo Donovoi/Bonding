@@ -137,6 +137,12 @@ This document describes the detailed architecture of the Bonding overlay network
 
 **Safety**: All FFI calls isolated with documented invariants
 
+**Windows Client Integration**:
+- `wintun_loader`: Handles DLL discovery and extraction
+- `build.rs`: Embeds architecture-specific Wintun DLL at compile time
+- DLL automatically extracted to executable directory on first run
+- Supports x86_64, x86, ARM64, and ARM architectures
+
 ### transport (Multi-path UDP)
 
 **Responsibility**: UDP sockets per interface + encryption
@@ -254,6 +260,8 @@ Typically deployed as Windows Service:
 - Starts automatically at boot
 - Runs with SYSTEM privileges
 - Configured via registry or config file
+- Wintun.dll embedded in release builds (no manual DLL management required)
+- Extracted automatically to executable directory on first run
 
 ### Server Configuration
 

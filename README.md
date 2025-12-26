@@ -30,6 +30,8 @@ The project is organized into three crates:
   - `reorder`: Sequence number tracking and replay protection
   - `control`: Health metrics and configuration
 - **bonding-client**: Windows client application
+  - `wintun_loader`: DLL loading with embedded support
+  - `build.rs`: Build script for embedding Wintun DLL
 - **bonding-server**: Linux server application
 
 ## Requirements
@@ -209,6 +211,7 @@ at your option.
 - [x] Core protocol implementation
 - [x] Scheduler and reorder buffer
 - [x] Basic encryption support
+- [x] Embedded Wintun DLL support for Windows client
 - [ ] Full Wintun FFI implementation
 - [ ] Linux TUN support
 - [ ] Complete client/server applications

@@ -64,6 +64,20 @@ cargo test --release
 - ✅ Wintun device creation (placeholder)
 - ⏳ Actual Wintun FFI (pending implementation)
 
+### Wintun Loader Module (`bonding-client/src/wintun_loader.rs`)
+
+- ✅ DLL discovery in executable directory
+- ✅ Embedded DLL extraction
+- ✅ Graceful handling of missing DLL
+- ✅ Works with and without embedded resources
+
+### Build Script (`bonding-client/build.rs`)
+
+- ✅ Architecture detection
+- ✅ DLL embedding code generation
+- ✅ Builds succeed without DLLs present (with warnings)
+- ✅ Correct path handling for Windows
+
 ### Scheduler Module (`scheduler.rs`)
 
 - ✅ STRIPE mode: Round-robin distribution
@@ -102,9 +116,9 @@ cargo test --release
 ## Test Statistics
 
 ```
-Total Tests: 31 passing
-Coverage: Core logic modules
-Lines of Test Code: ~400
+Total Tests: ~35 passing
+Coverage: Core logic modules + client infrastructure
+Lines of Test Code: ~500
 ```
 
 ## Integration Tests (To Be Added)
@@ -175,6 +189,8 @@ Platforms tested:
 - Linux (Ubuntu latest)
 - Windows (latest)
 
+**Release Workflow**: Automatically downloads and embeds Wintun DLLs for Windows builds.
+
 ## Manual Testing
 
 ### Prerequisites
@@ -182,7 +198,8 @@ Platforms tested:
 **Windows Client:**
 - Windows 11
 - Administrator privileges
-- `wintun.dll` (download from wintun.net)
+- For release builds: No additional requirements (DLL embedded)
+- For dev builds: Either place Wintun DLLs in `resources/` directory before building, or manually place `wintun.dll` next to executable
 
 **Linux Server:**
 - Linux with TUN/TAP support
@@ -192,14 +209,23 @@ Platforms tested:
 
 1. Build the project:
 ```bash
+# For development build without embedded DLL
+cargo build --release
+
+# For release build with embedded DLL (after setting up resources/)
+# See DEVELOPMENT.md for Wintun DLL setup instructions
 cargo build --release
 ```
 
 2. Copy binaries:
 ```bash
-# Windows
+# Windows (development build without embedded DLL)
 copy target\release\bonding-client.exe C:\bonding\
 copy wintun.dll C:\bonding\
+
+# Windows (release build with embedded DLL)
+copy target\release\bonding-client.exe C:\bonding\
+# No wintun.dll needed - it's embedded!
 
 # Linux
 sudo cp target/release/bonding-server /usr/local/bin/
@@ -225,6 +251,7 @@ Check that:
 2. UDP sockets are bound
 3. Packets flow through tunnel
 4. No crashes or errors in logs
+5. For embedded builds: wintun.dll extracted to executable directory on first run
 
 ## Troubleshooting Tests
 
