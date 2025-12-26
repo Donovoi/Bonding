@@ -13,6 +13,15 @@ mod linux_tun_config;
 #[cfg(target_os = "linux")]
 mod linux_nat_config;
 
+#[cfg(target_os = "windows")]
+mod wintun_loader;
+
+#[cfg(target_os = "windows")]
+mod windows_tun_config;
+
+#[cfg(target_os = "windows")]
+mod windows_nat_config;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     #[cfg(target_os = "windows")]

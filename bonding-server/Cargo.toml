@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+build = "build.rs"
 
 [dependencies]
 bonding-core = { path = "../bonding-core" }
