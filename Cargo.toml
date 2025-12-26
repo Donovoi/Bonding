@@ -13,6 +13,17 @@ repository = "https://github.com/Donovoi/Bonding"
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
 
+# CLI + TUI
+clap = { version = "4.5", features = ["derive"] }
+ratatui = { version = "0.28", default-features = false, features = [
+    "crossterm",
+] }
+crossterm = "0.28"
+
+# Config files
+directories = "5.0"
+toml = "0.8"
+
 # Networking
 socket2 = "0.5"
 
@@ -32,6 +43,9 @@ bincode = "1.3"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Human-friendly duration parsing/printing for config files
+humantime-serde = "1.1"
 
 # Error handling
 thiserror = "1.0"

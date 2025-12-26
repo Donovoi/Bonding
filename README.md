@@ -99,6 +99,12 @@ Release builds from GitHub have the Wintun DLL **bundled directly into the execu
 .\bonding-client.exe
 ```
 
+This launches the terminal UI. Use:
+
+- `s` to start/stop
+- `r` to reload config
+- `q` to quit
+
 ✅ **No additional files needed** - The Wintun DLL is embedded in the executable, so there's nothing else to download or configure.
 
 **For Development Builds**:
@@ -111,6 +117,12 @@ If you built the client yourself without embedding wintun.dll (see Building sect
 
 ```powershell
 .\bonding-client.exe
+```
+
+If you prefer a non-interactive foreground run, use:
+
+```powershell
+.\bonding-client.exe run
 ```
 
 ### Server Setup (Linux)
@@ -132,18 +144,41 @@ sudo iptables -A FORWARD -i tun0 -j ACCEPT
 sudo ./bonding-server
 ```
 
+This launches the terminal UI by default. For a headless foreground run:
+
+```bash
+sudo ./bonding-server run
+```
+
 ## Configuration
 
-Configuration is managed through environment variables or a config file (to be implemented):
+Both `bonding-client` and `bonding-server` support a TOML config file.
 
-- `BONDING_SERVER_ADDR`: Server IP address
-- `BONDING_SERVER_PORT`: Server UDP port (default: 5000)
-- `BONDING_MODE`: Bonding mode (stripe/preferred/redundant)
-- `BONDING_MTU`: TUN adapter MTU (default: 1420)
+- To see where the config lives on your system:
+  - `bonding-client print-config-path`
+  - `bonding-server print-config-path`
+- To create a default config file:
+  - `bonding-client init-config`
+  - `bonding-server init-config`
+
+If the config file does not exist, defaults are used.
 
 ## Usage
 
-The client and server are currently in development. Full usage instructions will be added as features are completed.
+Both binaries provide a small terminal UI (TUI) as a usability layer.
+
+- `bonding-client`:
+  - `bonding-client ui` (default if no subcommand)
+  - `bonding-client run` (headless foreground run)
+  - `bonding-client init-config [--force]`
+
+- `bonding-server`:
+  - `bonding-server ui` (default if no subcommand)
+  - `bonding-server run` (headless foreground run)
+  - `bonding-server init-config [--force]`
+
+Current behavior is intentionally minimal while the full dataplane is under development:
+the client periodically sends a UDP keepalive to the configured server, and the server logs/acks it.
 
 ## Troubleshooting
 
@@ -229,7 +264,8 @@ at your option.
 - [ ] Full Wintun FFI implementation
 - [ ] Linux TUN support
 - [ ] Complete client/server applications
-- [ ] Configuration file support
+- [x] Basic configuration file support (TOML)
+- [x] Terminal UI (TUI) to start/stop and view logs
 - [ ] Web UI for monitoring
 - [ ] Performance optimization
 - [ ] Production hardening
