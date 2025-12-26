@@ -17,7 +17,7 @@
 
 use super::TunDevice;
 use std::io;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use wintun::Session;
 
 /// Default MTU for Wintun adapters
@@ -33,12 +33,9 @@ const ADAPTER_NAME: &str = "Bonding";
 /// other Wintun-based VPN applications. This GUID is consistent across all Bonding
 /// installations to enable adapter reuse and proper identification.
 ///
-/// The GUID is parsed at compile time to catch format errors early.
-static ADAPTER_GUID: LazyLock<u128> = LazyLock::new(|| {
-    // Parse the GUID string at initialization
-    // Format: 5fb1c3e4-2e82-4e1b-a2f6-1d5c3e4f5a6b
-    0x5fb1c3e4_2e82_4e1b_a2f6_1d5c3e4f5a6b
-});
+/// The GUID is represented as a u128 constant.
+/// Format: 5fb1c3e4-2e82-4e1b-a2f6-1d5c3e4f5a6b
+const ADAPTER_GUID: u128 = 0x5fb1c3e4_2e82_4e1b_a2f6_1d5c3e4f5a6b;
 
 /// Wintun TUN device implementation
 ///
@@ -86,8 +83,8 @@ impl WintunDevice {
             })?
         };
 
-        // Use the pre-initialized GUID
-        let guid = *ADAPTER_GUID;
+        // Use the constant GUID
+        let guid = ADAPTER_GUID;
 
         // Create or open adapter
         let adapter = match Adapter::open(&wintun, adapter_name) {
