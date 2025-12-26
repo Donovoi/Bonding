@@ -38,8 +38,9 @@ The project is organized into three crates:
 
 - Windows 11 (primary target)
 - Administrator privileges (for Wintun adapter creation)
-- `wintun.dll` in the executable directory or system PATH
 - Active network interfaces (Wi-Fi and/or Ethernet)
+
+**Note**: Release builds have `wintun.dll` embedded, so no additional DLL installation is required.
 
 ### Server (Linux)
 
@@ -63,9 +64,39 @@ cargo clippy --all-targets -- -D warnings
 cargo doc --no-deps --open
 ```
 
+### Building with Embedded Wintun (Windows)
+
+To build Windows binaries with embedded wintun.dll:
+
+1. Download Wintun from [Wintun website](https://www.wintun.net/)
+2. Extract and place the DLL files in the `resources/` directory:
+   - `resources/wintun_amd64.dll` (from wintun/bin/amd64/wintun.dll)
+   - `resources/wintun_x86.dll` (from wintun/bin/x86/wintun.dll)
+   - `resources/wintun_arm64.dll` (from wintun/bin/arm64/wintun.dll)
+   - `resources/wintun_arm.dll` (from wintun/bin/arm/wintun.dll)
+3. Build normally: `cargo build --release`
+
+The build script will automatically embed the appropriate DLL for your architecture.
+
 ## Installation
 
 ### Client Setup (Windows)
+
+**Using Release Builds (Recommended)**:
+
+1. Download the latest release from the [Releases page](https://github.com/Donovoi/Bonding/releases)
+2. Extract the archive
+3. Run as Administrator:
+
+```powershell
+.\bonding-client.exe
+```
+
+Release binaries have `wintun.dll` embedded, so no additional setup is required.
+
+**For Development Builds**:
+
+If you built the client yourself without embedding wintun.dll, you'll need to:
 
 1. Download `wintun.dll` from [Wintun website](https://www.wintun.net/)
 2. Place `wintun.dll` next to `bonding-client.exe`
@@ -112,10 +143,13 @@ The client and server are currently in development. Full usage instructions will
 ### Windows Client
 
 **Issue**: "Failed to create Wintun adapter"
-- Solution: Ensure you're running as Administrator and `wintun.dll` is present
+- Solution: Ensure you're running as Administrator. If using a development build, verify `wintun.dll` is present in the executable directory.
 
 **Issue**: "No network interfaces found"
 - Solution: Check that at least one active network connection exists
+
+**Issue**: "wintun.dll not found"
+- Solution: Use a release build which has the DLL embedded, or place `wintun.dll` next to the executable for development builds.
 
 ### Linux Server
 
