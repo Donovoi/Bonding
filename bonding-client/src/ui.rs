@@ -24,6 +24,10 @@ use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
+type RunnerJoinHandle = tokio::task::JoinHandle<()>;
+type RunnerState = (watch::Sender<bool>, Option<RunnerJoinHandle>);
+type SharedRunner = Arc<Mutex<RunnerState>>;
+
 struct UiState {
     config_path: PathBuf,
     config: BondingConfig,
@@ -58,10 +62,7 @@ pub async fn run(config_path: PathBuf, config: BondingConfig) -> Result<()> {
 
     // Runner control
     let (stop_tx, stop_rx) = watch::channel(false);
-    let runner = Arc::new(Mutex::new((
-        stop_tx,
-        Option::<tokio::task::JoinHandle<()>>::None,
-    )));
+    let runner: SharedRunner = Arc::new(Mutex::new((stop_tx, None)));
 
     // Run the UI on a blocking thread. Make sure we restore the terminal even if the UI panics.
     tokio::task::spawn_blocking(move || run_ui_blocking(handle, state, runner, stop_rx, config))
@@ -74,7 +75,7 @@ pub async fn run(config_path: PathBuf, config: BondingConfig) -> Result<()> {
 fn run_ui_blocking(
     handle: Handle,
     state: Arc<Mutex<UiState>>,
-    runner: Arc<Mutex<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)>>,
+    runner: SharedRunner,
     stop_rx: watch::Receiver<bool>,
     initial_config: BondingConfig,
 ) -> Result<()> {
@@ -99,7 +100,7 @@ fn run_ui_blocking(
 fn ui_loop(
     handle: Handle,
     state: Arc<Mutex<UiState>>,
-    runner: Arc<Mutex<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)>>,
+    runner: SharedRunner,
     stop_rx: watch::Receiver<bool>,
     _initial_config: BondingConfig,
 ) -> Result<()> {
@@ -234,7 +235,7 @@ fn ui_loop(
                             s.push_log("Stopping...".to_string());
                             // join in background
                             if let Some(h) = handle_opt.take() {
-                                let _ = handle.block_on(async { h.await });
+                                let _ = handle.block_on(h);
                             }
                             // reset stop channel to false for next run
                             let _ = stop_tx.send(false);
