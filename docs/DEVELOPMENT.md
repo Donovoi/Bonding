@@ -77,11 +77,13 @@ Bonding/
 ├── docs/                  # Documentation
 │   ├── ARCHITECTURE.md
 │   ├── TESTING.md
-│   └── DEVELOPMENT.md
+│   ├── DEVELOPMENT.md
+│   └── CICD.md            # CI/CD pipeline documentation
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml         # CI/CD pipeline
-│       └── release.yml    # Release builds with embedded DLLs
+│       ├── ci.yml         # CI checks on every PR
+│       ├── auto-release.yml # Auto-release on PR merge
+│       └── release.yml    # Manual release workflow
 ├── Cargo.toml             # Workspace config
 └── README.md
 ```
@@ -367,18 +369,60 @@ This builds and opens the documentation in your browser.
 ## Getting Help
 
 - **Documentation**: Check `docs/` directory
+  - `ARCHITECTURE.md` - System design and architecture
+  - `TESTING.md` - Testing guidelines
+  - `CICD.md` - CI/CD pipeline and release process
+  - `DEVELOPMENT.md` - This guide
 - **Issues**: Open a GitHub issue
 - **Discussions**: Use GitHub discussions
 - **Code Review**: Ask for reviews on PRs
 
 ## Release Process
 
-1. Update version in `Cargo.toml`
-2. Update `CHANGELOG.md`
-3. Run full test suite
-4. Create git tag: `git tag v0.1.0`
-5. Push tag: `git push --tags`
-6. GitHub Actions builds release artifacts
+The project uses an automated release pipeline that triggers when pull requests are merged to the main branch.
+
+### Automated Release (Recommended)
+
+When you merge a PR that includes a version bump, the release pipeline automatically:
+
+1. **Update version** in the workspace `Cargo.toml` (increment version number)
+2. **Create a PR** with your changes
+3. **Merge the PR** - This triggers the automated release pipeline:
+   - Detects version change in `Cargo.toml`
+   - Runs full test suite (tests, clippy, formatting)
+   - Builds release binaries for Windows and Linux
+   - Creates a git tag (e.g., `v0.1.0`)
+   - Publishes a GitHub Release with binaries and release notes
+   - Sends status notifications
+
+The pipeline will only trigger if the version in `Cargo.toml` changed in the merged commit.
+
+### Manual Release (Alternative)
+
+If you need to create a release manually:
+
+1. Update version in workspace `Cargo.toml`
+2. Create git tag: `git tag v0.1.0`
+3. Push tag: `git push origin v0.1.0`
+4. GitHub Actions builds and publishes the release
+
+### Release Pipeline Workflow
+
+The automated release pipeline (`.github/workflows/auto-release.yml`) includes:
+
+- **Version Detection**: Checks if version changed in the last commit
+- **Testing**: Runs tests, clippy, and formatting checks on both platforms
+- **Building**: Compiles release binaries with embedded Wintun DLL (Windows)
+- **Packaging**: Creates distribution archives
+- **Release Creation**: Tags the commit and creates a GitHub Release
+- **Notifications**: Provides success/failure status
+
+### Monitoring Pipeline Status
+
+- View workflow runs at: `https://github.com/Donovoi/Bonding/actions`
+- Pipeline status appears in PR checks before merge
+- GitHub notifications alert on build failures
+- Release notes are auto-generated from PR descriptions
 
 ## Useful Commands
 

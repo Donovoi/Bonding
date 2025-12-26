@@ -1,0 +1,271 @@
+name: Auto Release on PR Merge
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE-*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  check-version:
+    name: Check for Version Change
+    runs-on: ubuntu-latest
+    outputs:
+      version_changed: ${{ steps.version_check.outputs.changed }}
+      new_version: ${{ steps.version_check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - name: Check if version changed
+        id: version_check
+        run: |
+          # Get current version from Cargo.toml
+          CURRENT_VERSION=$(grep -m 1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "Current version: $CURRENT_VERSION"
+          
+          # Check if version changed in the last commit
+          git diff HEAD~1 HEAD -- Cargo.toml | grep -q "^+version = " && VERSION_CHANGED=true || VERSION_CHANGED=false
+          
+          echo "changed=$VERSION_CHANGED" >> $GITHUB_OUTPUT
+          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          
+          if [ "$VERSION_CHANGED" = "true" ]; then
+            echo "✓ Version changed to $CURRENT_VERSION"
+          else
+            echo "✗ Version did not change"
+          fi
+
+  test:
+    name: Run Tests
+    needs: check-version
+    if: needs.check-version.outputs.version_changed == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        rust: [stable]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Run tests
+        run: cargo test --all --verbose
+      
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+      
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  build-and-release:
+    name: Build and Create Release
+    needs: [check-version, test]
+    if: needs.check-version.outputs.version_changed == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: bonding-windows
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: bonding-linux
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      
+      - name: Download and prepare Wintun DLL (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Download Wintun
+          $wintunVersion = "0.14.1"
+          $wintunUrl = "https://www.wintun.net/builds/wintun-$wintunVersion.zip"
+          $wintunZip = "wintun.zip"
+          
+          Write-Host "Downloading Wintun $wintunVersion..."
+          Invoke-WebRequest -Uri $wintunUrl -OutFile $wintunZip
+          
+          # Extract and organize DLLs
+          Write-Host "Extracting Wintun..."
+          Expand-Archive -Path $wintunZip -DestinationPath wintun-temp
+          
+          # Create resources directory
+          New-Item -ItemType Directory -Force -Path resources
+          
+          # Copy and rename DLLs for each architecture
+          Copy-Item "wintun-temp/wintun/bin/amd64/wintun.dll" "resources/wintun_amd64.dll"
+          Copy-Item "wintun-temp/wintun/bin/x86/wintun.dll" "resources/wintun_x86.dll"
+          Copy-Item "wintun-temp/wintun/bin/arm64/wintun.dll" "resources/wintun_arm64.dll"
+          Copy-Item "wintun-temp/wintun/bin/arm/wintun.dll" "resources/wintun_arm.dll"
+          
+          Write-Host "Wintun DLLs prepared in resources directory"
+          
+          # Clean up
+          Remove-Item -Recurse -Force wintun-temp
+          Remove-Item $wintunZip
+      
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --verbose
+      
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.target }}"
+          $archiveName = "${{ matrix.asset_name }}-${{ matrix.target }}.zip"
+          
+          # Create package directory
+          New-Item -ItemType Directory -Force -Path package
+          
+          # Copy binary
+          Copy-Item "target/$target/release/bonding-client.exe" package/
+          
+          # Copy README and LICENSE files
+          if (Test-Path "README.md") { Copy-Item "README.md" package/ }
+          if (Test-Path "LICENSE-MIT") { Copy-Item "LICENSE-MIT" package/ }
+          if (Test-Path "LICENSE-APACHE") { Copy-Item "LICENSE-APACHE" package/ }
+          
+          # Create archive
+          Compress-Archive -Path package/* -DestinationPath $archiveName
+          
+          Write-Host "Created archive: $archiveName"
+      
+      - name: Package (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          target="${{ matrix.target }}"
+          archive_name="${{ matrix.asset_name }}-${target}.tar.gz"
+          
+          # Create package directory
+          mkdir -p package
+          
+          # Copy binary
+          cp "target/${target}/release/bonding-server" package/
+          
+          # Copy README and LICENSE files
+          [ -f README.md ] && cp README.md package/
+          [ -f LICENSE-MIT ] && cp LICENSE-MIT package/
+          [ -f LICENSE-APACHE ] && cp LICENSE-APACHE package/
+          
+          # Create archive
+          tar -czf "${archive_name}" -C package .
+          
+          echo "Created archive: ${archive_name}"
+      
+      - name: Upload Release Asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}-${{ matrix.target }}
+          path: |
+            ./${{ matrix.asset_name }}-${{ matrix.target }}.*
+
+  create-release:
+    name: Create GitHub Release
+    needs: [check-version, build-and-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Create Release Tag
+        id: create_tag
+        run: |
+          VERSION="v${{ needs.check-version.outputs.new_version }}"
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Check if tag already exists
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists, skipping tag creation"
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
+          else
+            git tag -a "$VERSION" -m "Release $VERSION"
+            git push origin "$VERSION"
+            echo "tag_exists=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.create_tag.outputs.tag }}
+          name: Release ${{ steps.create_tag.outputs.tag }}
+          files: artifacts/**/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## Release ${{ steps.create_tag.outputs.tag }}
+            
+            This release was automatically created after merging a pull request to the main branch.
+            
+            ### Installation
+            
+            **Windows:**
+            - Download `bonding-windows-x86_64-pc-windows-msvc.zip`
+            - Extract and run `bonding-client.exe` as Administrator
+            
+            **Linux:**
+            - Download `bonding-linux-x86_64-unknown-linux-gnu.tar.gz`
+            - Extract and run `./bonding-server` with sudo
+            
+            See the [README](https://github.com/Donovoi/Bonding/blob/main/README.md) for detailed setup instructions.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Notify Success
+        if: success()
+        run: |
+          echo "::notice::Release ${{ steps.create_tag.outputs.tag }} created successfully!"
+      
+      - name: Notify Failure
+        if: failure()
+        run: |
+          echo "::error::Failed to create release ${{ steps.create_tag.outputs.tag }}"
