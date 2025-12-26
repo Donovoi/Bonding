@@ -17,6 +17,7 @@ Bonding creates a virtual Layer-3 adapter (TUN) on Windows using Wintun, capture
 - **Reordering**: Handles out-of-order packet delivery with jitter buffer
 - **Replay protection**: Sequence number tracking prevents replay attacks
 - **Health metrics**: RTT, loss rate, and throughput monitoring per path
+- **Embedded Wintun DLL**: Windows release builds include Wintun DLL bundled directly in the executable - no separate installation required
 
 ## Architecture
 
@@ -42,7 +43,7 @@ The project is organized into three crates:
 - Administrator privileges (for Wintun adapter creation)
 - Active network interfaces (Wi-Fi and/or Ethernet)
 
-**Note**: Release builds have `wintun.dll` embedded, so no additional DLL installation is required.
+**Important**: All official release binaries from the [Releases page](https://github.com/Donovoi/Bonding/releases) have the Wintun DLL embedded directly in the executable. You do **not** need to download or install `wintun.dll` separately when using release builds.
 
 ### Server (Linux)
 
@@ -68,6 +69,8 @@ cargo doc --no-deps --open
 
 ### Building with Embedded Wintun (Windows)
 
+**Important**: The Wintun DLL is **automatically bundled** in official releases from GitHub Actions. The instructions below are only needed if you're building locally and want to embed the DLL yourself.
+
 To build Windows binaries with embedded wintun.dll:
 
 1. Download Wintun from [Wintun website](https://www.wintun.net/)
@@ -78,7 +81,7 @@ To build Windows binaries with embedded wintun.dll:
    - `resources/wintun_arm.dll` (from wintun/bin/arm/wintun.dll)
 3. Build normally: `cargo build --release`
 
-The build script will automatically embed the appropriate DLL for your architecture.
+The build script (`bonding-client/build.rs`) will automatically detect and embed the appropriate DLL for your target architecture. If the DLL files are not present in `resources/`, the build will still succeed, but the resulting executable will require `wintun.dll` to be placed next to it at runtime.
 
 ## Installation
 
@@ -86,22 +89,24 @@ The build script will automatically embed the appropriate DLL for your architect
 
 **Using Release Builds (Recommended)**:
 
+Release builds from GitHub have the Wintun DLL **bundled directly into the executable**, making installation simple and straightforward.
+
 1. Download the latest release from the [Releases page](https://github.com/Donovoi/Bonding/releases)
-2. Extract the archive
-3. Run as Administrator:
+2. Extract the archive to your preferred location
+3. Run `bonding-client.exe` as Administrator:
 
 ```powershell
 .\bonding-client.exe
 ```
 
-Release binaries have `wintun.dll` embedded, so no additional setup is required.
+✅ **No additional files needed** - The Wintun DLL is embedded in the executable, so there's nothing else to download or configure.
 
 **For Development Builds**:
 
-If you built the client yourself without embedding wintun.dll, you'll need to:
+If you built the client yourself without embedding wintun.dll (see Building section), you'll need to:
 
 1. Download `wintun.dll` from [Wintun website](https://www.wintun.net/)
-2. Place `wintun.dll` next to `bonding-client.exe`
+2. Place `wintun.dll` next to `bonding-client.exe` in the same directory
 3. Run as Administrator:
 
 ```powershell
