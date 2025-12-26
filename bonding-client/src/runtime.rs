@@ -1,10 +1,14 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use bonding_core::control::BondingConfig;
+#[cfg(target_os = "windows")]
+use bonding_core::proto::control::{self, ControlMessage};
 use bonding_core::proto::Packet;
 #[cfg(target_os = "windows")]
 use bonding_core::proto::PacketFlags;
 use bonding_core::transport::{EncryptionKey, PacketCrypto};
+#[cfg(target_os = "windows")]
+use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -239,19 +243,34 @@ async fn run_client_tun_mode(
         cfg.mtu
     ));
 
+    let tun_name = tun.name().to_string();
+    let effective_mtu = cfg.mtu.min(tun.mtu());
+    if effective_mtu != cfg.mtu {
+        (log.as_ref())(format!(
+            "Warning: cfg.mtu={} exceeds Wintun MTU={}; using effective_mtu={} for buffers/config",
+            cfg.mtu,
+            tun.mtu(),
+            effective_mtu
+        ));
+    }
+
+    let mut assigned_ipv4: Option<Ipv4Addr> = None;
+    let mut tun_configured: bool = false;
+
     if cfg.auto_config_tun {
         if let Some(ip) = cfg.tun_ipv4_addr {
             crate::windows_tun_config::configure_windows_tun(
-                tun.name(),
-                cfg.mtu,
+                &tun_name,
+                effective_mtu,
                 ip,
                 cfg.tun_ipv4_prefix,
                 &cfg.tun_routes,
                 &|m| (log.as_ref())(m),
             )?;
+            tun_configured = true;
         } else {
             (log.as_ref())(
-                "auto_config_tun=true but tun_ipv4_addr is not set; skipping auto config"
+                "auto_config_tun=true but tun_ipv4_addr is not set; will wait for server ASSIGN"
                     .to_string(),
             );
         }
@@ -266,7 +285,7 @@ async fn run_client_tun_mode(
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_thread = Arc::clone(&stop_flag);
     let log_thread = Arc::clone(&log);
-    let mtu = cfg.mtu;
+    let mtu = effective_mtu;
 
     let tun_thread = thread::spawn(move || {
         let mut tun = tun;
@@ -332,6 +351,35 @@ async fn run_client_tun_mode(
                 let _ = sock.send_to(&wire, server).await;
                 tx_seq = tx_seq.wrapping_add(1);
 
+                // Handshake: request an assigned VIP until we get one.
+                if assigned_ipv4.is_none() {
+                    let hello = ControlMessage::Hello {
+                        requested_ipv4: cfg.tun_ipv4_addr,
+                    };
+                    let payload = control::encode(&hello);
+                    let flags_raw: u8 = 0;
+
+                    let wire = if let Some(ref crypto) = crypto {
+                        crypto
+                            .seal_packet_with_flags(
+                                NONCE_DOMAIN_CLIENT_TO_SERVER,
+                                session_id,
+                                tx_seq,
+                                flags_raw,
+                                &payload,
+                            )
+                            .context("failed to seal HELLO control packet")?
+                            .encode()
+                    } else {
+                        let mut pkt = Packet::new(session_id, tx_seq, payload);
+                        pkt.header.flags = PacketFlags::from_raw(flags_raw);
+                        pkt.encode()
+                    };
+
+                    let _ = sock.send_to(&wire, server).await;
+                    tx_seq = tx_seq.wrapping_add(1);
+                }
+
                 let dropped_delta = dropped_net_to_tun.saturating_sub(dropped_net_to_tun_last);
                 dropped_net_to_tun_last = dropped_net_to_tun;
                 if dropped_delta > 0 {
@@ -345,6 +393,12 @@ async fn run_client_tun_mode(
                 let Some(ip_packet) = maybe_pkt else {
                     break;
                 };
+
+                // If we're expecting the server to assign an IP (auto_config_tun with no local
+                // tun_ipv4_addr), avoid sending data until we've received ASSIGN.
+                if cfg.auto_config_tun && cfg.tun_ipv4_addr.is_none() && assigned_ipv4.is_none() {
+                    continue;
+                }
 
                 let wire = if let Some(ref crypto) = crypto {
                     crypto
@@ -390,6 +444,42 @@ async fn run_client_tun_mode(
                 } else {
                     pkt.payload
                 };
+
+                // Handle control-plane packets (ASSIGN/NACK) first.
+                if let Some(ctrl) = control::decode(&payload) {
+                    match ctrl {
+                        ControlMessage::Assign { ipv4, prefix } => {
+                            assigned_ipv4 = Some(ipv4);
+                            (log.as_ref())(format!(
+                                "Server assigned tunnel IPv4: {ipv4}/{prefix}"
+                            ));
+
+                            if cfg.auto_config_tun
+                                && (!tun_configured
+                                    || cfg.tun_ipv4_addr != Some(ipv4)
+                                    || cfg.tun_ipv4_prefix != prefix)
+                            {
+                                crate::windows_tun_config::configure_windows_tun(
+                                    &tun_name,
+                                    effective_mtu,
+                                    ipv4,
+                                    prefix,
+                                    &cfg.tun_routes,
+                                    &|m| (log.as_ref())(m),
+                                )?;
+                                tun_configured = true;
+                            }
+                        }
+                        ControlMessage::Nack { code, message } => {
+                            (log.as_ref())(format!(
+                                "Server NACK (code={code}): {message}"
+                            ));
+                        }
+                        ControlMessage::Hello { .. } => {}
+                    }
+
+                    continue;
+                }
 
                 if pkt.header.flags.is_set(PacketFlags::ACK_ONLY) || payload.is_empty() {
                     // Keepalive/control packet.

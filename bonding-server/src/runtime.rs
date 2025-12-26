@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use bonding_core::control::ServerConfig;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use bonding_core::proto::control::{self, ControlMessage};
 use bonding_core::proto::Packet;
 use bonding_core::transport::{EncryptionKey, PacketCrypto};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -32,6 +34,7 @@ fn decode_key_b64(s: &str) -> Result<EncryptionKey> {
     Ok(key)
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn ipv4_src_dst(packet: &[u8]) -> Option<(Ipv4Addr, Ipv4Addr)> {
     // Minimal IPv4 parser for routing: src/dst are always at fixed offsets.
     // Returns None if the packet doesn't look like IPv4.
@@ -54,8 +57,96 @@ fn ipv4_src_dst(packet: &[u8]) -> Option<(Ipv4Addr, Ipv4Addr)> {
     Some((src, dst))
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn ipv4_dst(packet: &[u8]) -> Option<Ipv4Addr> {
     ipv4_src_dst(packet).map(|(_, dst)| dst)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[derive(Debug, Clone)]
+struct Ipv4Pool {
+    net: u32,
+    mask: u32,
+    first: u32,
+    last: u32,
+    server_ip: u32,
+    next: u32,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl Ipv4Pool {
+    fn new(server_ip: Ipv4Addr, prefix: u8) -> Result<Self> {
+        anyhow::ensure!(prefix <= 32, "invalid IPv4 prefix length: {prefix}");
+
+        let ip_u32 = u32::from_be_bytes(server_ip.octets());
+        let mask: u32 = if prefix == 0 {
+            0
+        } else {
+            u32::MAX << (32 - prefix)
+        };
+        let net = ip_u32 & mask;
+        let broadcast = net | (!mask);
+
+        // Reserve network + broadcast; for small prefixes there may be no usable hosts.
+        let first = net.saturating_add(1);
+        let last = broadcast.saturating_sub(1);
+        anyhow::ensure!(
+            first <= last,
+            "subnet /{prefix} has no usable host addresses"
+        );
+
+        Ok(Self {
+            net,
+            mask,
+            first,
+            last,
+            server_ip: ip_u32,
+            next: first,
+        })
+    }
+
+    fn contains(&self, ip: Ipv4Addr) -> bool {
+        let ip_u32 = u32::from_be_bytes(ip.octets());
+        (ip_u32 & self.mask) == self.net
+    }
+
+    fn is_reserved(&self, ip: Ipv4Addr) -> bool {
+        let ip_u32 = u32::from_be_bytes(ip.octets());
+        ip_u32 == self.server_ip || ip_u32 < self.first || ip_u32 > self.last
+    }
+
+    fn allocate_next(
+        &mut self,
+        assigned: &std::collections::HashSet<Ipv4Addr>,
+    ) -> Option<Ipv4Addr> {
+        let mut cur = self.next;
+        for _ in 0..=((self.last - self.first) as usize) {
+            if cur == self.server_ip {
+                cur = if cur >= self.last {
+                    self.first
+                } else {
+                    cur + 1
+                };
+                continue;
+            }
+
+            let ip = Ipv4Addr::from(cur.to_be_bytes());
+            if !assigned.contains(&ip) {
+                self.next = if cur >= self.last {
+                    self.first
+                } else {
+                    cur + 1
+                };
+                return Some(ip);
+            }
+            cur = if cur >= self.last {
+                self.first
+            } else {
+                cur + 1
+            };
+        }
+        None
+    }
 }
 
 pub async fn run_server(
@@ -193,7 +284,7 @@ async fn run_server_tun_mode_windows(
 ) -> Result<()> {
     use bonding_core::proto::PacketFlags;
     use bonding_core::tun::{TunDevice, WintunDevice};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::io;
     use std::net::Ipv4Addr;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -356,18 +447,27 @@ async fn run_server_tun_mode_windows(
     let mut last_peer: Option<SocketAddr> = None;
     let mut last_session_id: Option<u64> = None;
 
-    // Best-effort multi-client support:
+    // Multi-client support with explicit per-session VIP assignment:
     // - Track active sessions by session_id -> (peer, last_seen)
-    // - Learn client tunnel IPv4 by observing IPv4 source addresses
-    //   from client->server packets, then route server->client packets
-    //   by IPv4 destination address.
+    // - Assign (and remember) a single VIP per session
+    // - Route server->client packets by IPv4 destination address to the
+    //   assigned session/peer (no traffic learning)
+    // - Enforce anti-spoofing: drop client packets whose inner IPv4 source
+    //   address doesn't match the session's assigned VIP
     let mut sessions: HashMap<u64, (SocketAddr, Instant)> = HashMap::new();
+    let mut assigned_by_session: HashMap<u64, Ipv4Addr> = HashMap::new();
+    let mut assigned_set: HashSet<Ipv4Addr> = HashSet::new();
     let mut vip_to_session: HashMap<Ipv4Addr, (u64, SocketAddr, Instant)> = HashMap::new();
     let mut dropped_net_to_tun: u64 = 0;
     let mut dropped_net_to_tun_last: u64 = 0;
 
     const SESSION_TTL: Duration = Duration::from_secs(30);
-    const VIP_TTL: Duration = Duration::from_secs(60);
+
+    let mut pool = cfg
+        .tun_ipv4_addr
+        .map(|ip| Ipv4Pool::new(ip, cfg.tun_ipv4_prefix))
+        .transpose()
+        .context("failed to initialize IPv4 pool")?;
 
     let mut health_tick = tokio::time::interval(cfg.health_interval);
     let mut keepalive_tick = tokio::time::interval(Duration::from_secs(2));
@@ -377,11 +477,27 @@ async fn run_server_tun_mode_windows(
             _ = health_tick.tick() => {
                 let now = Instant::now();
 
-                sessions.retain(|_, (_, last_seen)| now.duration_since(*last_seen) < SESSION_TTL);
-                vip_to_session.retain(|_, v| {
-                    let (sid, _peer, last_seen) = v;
-                    now.duration_since(*last_seen) < VIP_TTL && sessions.contains_key(sid)
-                });
+                let expired: Vec<u64> = sessions
+                    .iter()
+                    .filter_map(|(sid, (_peer, last_seen))| {
+                        if now.duration_since(*last_seen) >= SESSION_TTL {
+                            Some(*sid)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                for sid in expired {
+                    sessions.remove(&sid);
+                    if let Some(ip) = assigned_by_session.remove(&sid) {
+                        assigned_set.remove(&ip);
+                        vip_to_session.remove(&ip);
+                    }
+                }
+
+                // Remove mappings for sessions we no longer track.
+                vip_to_session.retain(|_, (sid, _peer, _last_seen)| sessions.contains_key(sid));
 
                 let dropped_delta = dropped_net_to_tun.saturating_sub(dropped_net_to_tun_last);
                 dropped_net_to_tun_last = dropped_net_to_tun;
@@ -390,7 +506,7 @@ async fn run_server_tun_mode_windows(
                     "Health tick: received_packets={received} peer_known={} sessions={} clients={} dropped_udp_to_tun={} (+{})",
                     last_peer.is_some(),
                     sessions.len(),
-                    vip_to_session.len(),
+                    assigned_by_session.len(),
                     dropped_net_to_tun,
                     dropped_delta
                 ));
@@ -464,6 +580,12 @@ async fn run_server_tun_mode_windows(
                 let now = Instant::now();
                 sessions.insert(pkt.header.session_id, (peer, now));
 
+                // If we've assigned this session a VIP, keep the vip->session mapping fresh
+                // even for ACK_ONLY keepalives.
+                if let Some(ip) = assigned_by_session.get(&pkt.header.session_id).copied() {
+                    vip_to_session.insert(ip, (pkt.header.session_id, peer, now));
+                }
+
                 last_peer = Some(peer);
                 last_session_id = Some(pkt.header.session_id);
 
@@ -471,9 +593,119 @@ async fn run_server_tun_mode_windows(
                     continue;
                 }
 
-                if let Some((src, _dst)) = ipv4_src_dst(&payload) {
-                    vip_to_session.insert(src, (pkt.header.session_id, peer, now));
+                // Control handshake messages are handled here and never forwarded to TUN.
+                if let Some(ctrl) = control::decode(&payload) {
+                    match ctrl {
+                        ControlMessage::Hello { requested_ipv4 } => {
+                            let assigned = if let Some(ip) = assigned_by_session.get(&pkt.header.session_id).copied() {
+                                Ok(ip)
+                            } else {
+                                let candidate = match requested_ipv4 {
+                                    Some(ip) => {
+                                        if assigned_set.contains(&ip) {
+                                            Err(ControlMessage::Nack { code: 3, message: "requested_ip_in_use".to_string() })
+                                        } else if let Some(ref p) = pool {
+                                            if !p.contains(ip) || p.is_reserved(ip) {
+                                                Err(ControlMessage::Nack { code: 2, message: "requested_ip_out_of_range".to_string() })
+                                            } else {
+                                                Ok(ip)
+                                            }
+                                        } else {
+                                            Ok(ip)
+                                        }
+                                    }
+                                    None => {
+                                        if let Some(ref mut p) = pool {
+                                            match p.allocate_next(&assigned_set) {
+                                                Some(ip) => Ok(ip),
+                                                None => Err(ControlMessage::Nack { code: 4, message: "no_free_ips".to_string() }),
+                                            }
+                                        } else {
+                                            Err(ControlMessage::Nack { code: 1, message: "server_has_no_ip_pool".to_string() })
+                                        }
+                                    }
+                                };
+
+                                match candidate {
+                                    Ok(ip) => {
+                                        assigned_by_session.insert(pkt.header.session_id, ip);
+                                        assigned_set.insert(ip);
+                                        vip_to_session.insert(ip, (pkt.header.session_id, peer, now));
+                                        Ok(ip)
+                                    }
+                                    Err(nack) => Err(nack),
+                                }
+                            };
+
+                            let resp = match assigned {
+                                Ok(ip) => ControlMessage::Assign { ipv4: ip, prefix: cfg.tun_ipv4_prefix },
+                                Err(nack) => nack,
+                            };
+
+                            let resp_payload = control::encode(&resp);
+                            let flags_raw: u8 = 0;
+                            let wire = if let Some(ref crypto) = crypto {
+                                crypto
+                                    .seal_packet_with_flags(
+                                        NONCE_DOMAIN_SERVER_TO_CLIENT,
+                                        pkt.header.session_id,
+                                        tx_seq,
+                                        flags_raw,
+                                        &resp_payload,
+                                    )
+                                    .context("failed to seal control response")?
+                                    .encode()
+                            } else {
+                                let mut out = Packet::new(pkt.header.session_id, tx_seq, resp_payload);
+                                out.header.flags = PacketFlags::from_raw(flags_raw);
+                                out.encode()
+                            };
+
+                            tx_seq = tx_seq.wrapping_add(1);
+                            let _ = sock.send_to(&wire, peer).await;
+                        }
+                        ControlMessage::Assign { .. } | ControlMessage::Nack { .. } => {
+                            // Server ignores these.
+                        }
+                    }
+
+                    continue;
                 }
+
+                // Implicit assignment fallback: if the session isn't assigned yet and this is an
+                // IPv4 packet, pin the session to its IPv4 source address.
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    assigned_by_session.entry(pkt.header.session_id)
+                {
+                    if let Some((src, _dst)) = ipv4_src_dst(&payload) {
+                        let ok = if let Some(ref p) = pool {
+                            p.contains(src) && !p.is_reserved(src)
+                        } else {
+                            true
+                        };
+
+                        if ok && !assigned_set.contains(&src) {
+                            e.insert(src);
+                            assigned_set.insert(src);
+                            vip_to_session.insert(src, (pkt.header.session_id, peer, now));
+                        }
+                    }
+                }
+
+                let Some(assigned) = assigned_by_session.get(&pkt.header.session_id).copied() else {
+                    // No assignment yet; drop data until HELLO/ASSIGN or implicit assignment.
+                    continue;
+                };
+
+                // Anti-spoof: require IPv4 and correct source address.
+                let Some((src, _dst)) = ipv4_src_dst(&payload) else {
+                    continue;
+                };
+                if src != assigned {
+                    continue;
+                }
+
+                vip_to_session.insert(assigned, (pkt.header.session_id, peer, now));
 
                 if let Err(_e) = net_to_tun_tx.try_send(payload) {
                     dropped_net_to_tun = dropped_net_to_tun.wrapping_add(1);
@@ -484,6 +716,12 @@ async fn run_server_tun_mode_windows(
                 let Some(ip_packet) = maybe_pkt else {
                     break;
                 };
+
+                if let (Some(server_ip), Some(dst)) = (cfg.tun_ipv4_addr, ipv4_dst(&ip_packet)) {
+                    if dst == server_ip {
+                        continue;
+                    }
+                }
 
                 let mut target: Option<(SocketAddr, u64)> = None;
                 if let Some(dst) = ipv4_dst(&ip_packet) {
@@ -553,7 +791,7 @@ async fn run_server_tun_mode(
     log: Arc<LogFn>,
 ) -> Result<()> {
     use bonding_core::proto::PacketFlags;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::net::Ipv4Addr;
     use std::time::{Duration, Instant};
     use tun_rs::DeviceBuilder;
@@ -645,10 +883,17 @@ async fn run_server_tun_mode(
     let mut last_session_id: Option<u64> = None;
 
     let mut sessions: HashMap<u64, (SocketAddr, Instant)> = HashMap::new();
+    let mut assigned_by_session: HashMap<u64, Ipv4Addr> = HashMap::new();
+    let mut assigned_set: HashSet<Ipv4Addr> = HashSet::new();
     let mut vip_to_session: HashMap<Ipv4Addr, (u64, SocketAddr, Instant)> = HashMap::new();
 
     const SESSION_TTL: Duration = Duration::from_secs(30);
-    const VIP_TTL: Duration = Duration::from_secs(60);
+
+    let mut pool = cfg
+        .tun_ipv4_addr
+        .map(|ip| Ipv4Pool::new(ip, cfg.tun_ipv4_prefix))
+        .transpose()
+        .context("failed to initialize IPv4 pool")?;
 
     let mut health_tick = tokio::time::interval(cfg.health_interval);
     let mut keepalive_tick = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -658,17 +903,33 @@ async fn run_server_tun_mode(
             _ = health_tick.tick() => {
                 let now = Instant::now();
 
-                sessions.retain(|_, (_, last_seen)| now.duration_since(*last_seen) < SESSION_TTL);
-                vip_to_session.retain(|_, v| {
-                    let (sid, _peer, last_seen) = v;
-                    now.duration_since(*last_seen) < VIP_TTL && sessions.contains_key(sid)
-                });
+                let expired: Vec<u64> = sessions
+                    .iter()
+                    .filter_map(|(sid, (_peer, last_seen))| {
+                        if now.duration_since(*last_seen) >= SESSION_TTL {
+                            Some(*sid)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                for sid in expired {
+                    sessions.remove(&sid);
+                    if let Some(ip) = assigned_by_session.remove(&sid) {
+                        assigned_set.remove(&ip);
+                        vip_to_session.remove(&ip);
+                    }
+                }
+
+                // Remove mappings for sessions we no longer track.
+                vip_to_session.retain(|_, (sid, _peer, _last_seen)| sessions.contains_key(sid));
 
                 (log.as_ref())(format!(
                     "Health tick: received_packets={received} peer_known={} sessions={} clients={}",
                     last_peer.is_some(),
                     sessions.len(),
-                    vip_to_session.len()
+                    assigned_by_session.len()
                 ));
             }
 
@@ -740,6 +1001,12 @@ async fn run_server_tun_mode(
                 let now = Instant::now();
                 sessions.insert(pkt.header.session_id, (peer, now));
 
+                // If we've assigned this session a VIP, keep the vip->session mapping fresh
+                // even for ACK_ONLY keepalives.
+                if let Some(ip) = assigned_by_session.get(&pkt.header.session_id).copied() {
+                    vip_to_session.insert(ip, (pkt.header.session_id, peer, now));
+                }
+
                 last_peer = Some(peer);
                 last_session_id = Some(pkt.header.session_id);
 
@@ -747,9 +1014,119 @@ async fn run_server_tun_mode(
                     continue;
                 }
 
-                if let Some((src, _dst)) = ipv4_src_dst(&payload) {
-                    vip_to_session.insert(src, (pkt.header.session_id, peer, now));
+                // Control handshake messages are handled here and never forwarded to TUN.
+                if let Some(ctrl) = control::decode(&payload) {
+                    match ctrl {
+                        ControlMessage::Hello { requested_ipv4 } => {
+                            let assigned = if let Some(ip) = assigned_by_session.get(&pkt.header.session_id).copied() {
+                                Ok(ip)
+                            } else {
+                                let candidate = match requested_ipv4 {
+                                    Some(ip) => {
+                                        if assigned_set.contains(&ip) {
+                                            Err(ControlMessage::Nack { code: 3, message: "requested_ip_in_use".to_string() })
+                                        } else if let Some(ref p) = pool {
+                                            if !p.contains(ip) || p.is_reserved(ip) {
+                                                Err(ControlMessage::Nack { code: 2, message: "requested_ip_out_of_range".to_string() })
+                                            } else {
+                                                Ok(ip)
+                                            }
+                                        } else {
+                                            Ok(ip)
+                                        }
+                                    }
+                                    None => {
+                                        if let Some(ref mut p) = pool {
+                                            match p.allocate_next(&assigned_set) {
+                                                Some(ip) => Ok(ip),
+                                                None => Err(ControlMessage::Nack { code: 4, message: "no_free_ips".to_string() }),
+                                            }
+                                        } else {
+                                            Err(ControlMessage::Nack { code: 1, message: "server_has_no_ip_pool".to_string() })
+                                        }
+                                    }
+                                };
+
+                                match candidate {
+                                    Ok(ip) => {
+                                        assigned_by_session.insert(pkt.header.session_id, ip);
+                                        assigned_set.insert(ip);
+                                        vip_to_session.insert(ip, (pkt.header.session_id, peer, now));
+                                        Ok(ip)
+                                    }
+                                    Err(nack) => Err(nack),
+                                }
+                            };
+
+                            let resp = match assigned {
+                                Ok(ip) => ControlMessage::Assign { ipv4: ip, prefix: cfg.tun_ipv4_prefix },
+                                Err(nack) => nack,
+                            };
+
+                            let resp_payload = control::encode(&resp);
+                            let flags_raw: u8 = 0;
+                            let wire = if let Some(ref crypto) = crypto {
+                                crypto
+                                    .seal_packet_with_flags(
+                                        NONCE_DOMAIN_SERVER_TO_CLIENT,
+                                        pkt.header.session_id,
+                                        tx_seq,
+                                        flags_raw,
+                                        &resp_payload,
+                                    )
+                                    .context("failed to seal control response")?
+                                    .encode()
+                            } else {
+                                let mut out = Packet::new(pkt.header.session_id, tx_seq, resp_payload);
+                                out.header.flags = PacketFlags::from_raw(flags_raw);
+                                out.encode()
+                            };
+
+                            tx_seq = tx_seq.wrapping_add(1);
+                            let _ = sock.send_to(&wire, peer).await;
+                        }
+                        ControlMessage::Assign { .. } | ControlMessage::Nack { .. } => {
+                            // Server ignores these.
+                        }
+                    }
+
+                    continue;
                 }
+
+                // Implicit assignment fallback: if the session isn't assigned yet and this is an
+                // IPv4 packet, pin the session to its IPv4 source address.
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    assigned_by_session.entry(pkt.header.session_id)
+                {
+                    if let Some((src, _dst)) = ipv4_src_dst(&payload) {
+                        let ok = if let Some(ref p) = pool {
+                            p.contains(src) && !p.is_reserved(src)
+                        } else {
+                            true
+                        };
+
+                        if ok && !assigned_set.contains(&src) {
+                            e.insert(src);
+                            assigned_set.insert(src);
+                            vip_to_session.insert(src, (pkt.header.session_id, peer, now));
+                        }
+                    }
+                }
+
+                let Some(assigned) = assigned_by_session.get(&pkt.header.session_id).copied() else {
+                    // No assignment yet; drop data until HELLO/ASSIGN or implicit assignment.
+                    continue;
+                };
+
+                // Anti-spoof: require IPv4 and correct source address.
+                let Some((src, _dst)) = ipv4_src_dst(&payload) else {
+                    continue;
+                };
+                if src != assigned {
+                    continue;
+                }
+
+                vip_to_session.insert(assigned, (pkt.header.session_id, peer, now));
 
                 dev.send(&payload).await.context("failed to write packet to TUN")?;
             }
@@ -761,6 +1138,12 @@ async fn run_server_tun_mode(
                 }
 
                 let plaintext = &tun_buf[..n];
+
+                if let (Some(server_ip), Some(dst)) = (cfg.tun_ipv4_addr, ipv4_dst(plaintext)) {
+                    if dst == server_ip {
+                        continue;
+                    }
+                }
 
                 let mut target: Option<(SocketAddr, u64)> = None;
                 if let Some(dst) = ipv4_dst(plaintext) {

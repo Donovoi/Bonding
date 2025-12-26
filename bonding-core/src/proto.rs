@@ -20,6 +20,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::net::Ipv4Addr;
 
 /// Magic number identifying Bonding protocol packets (ASCII: "BOND")
 pub const PROTOCOL_MAGIC: u32 = 0x424F4E44;
@@ -281,6 +282,123 @@ impl Packet {
     }
 }
 
+/// Small control protocol carried inside the packet payload.
+///
+/// Control messages are typically sent with `PacketFlags::ACK_ONLY` to ensure they are
+/// never forwarded to the OS TUN device.
+pub mod control {
+    use super::*;
+
+    const MAGIC: [u8; 4] = *b"BND1";
+    const VERSION: u8 = 1;
+
+    const TYPE_HELLO: u8 = 1;
+    const TYPE_ASSIGN: u8 = 2;
+    const TYPE_NACK: u8 = 3;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum ControlMessage {
+        /// Client requests an IPv4 assignment for its tunnel interface.
+        /// If `requested_ipv4` is present, the server will either accept it or NACK.
+        Hello { requested_ipv4: Option<Ipv4Addr> },
+
+        /// Server assigns an IPv4 + prefix to the client.
+        Assign { ipv4: Ipv4Addr, prefix: u8 },
+
+        /// Server refuses the request.
+        Nack { code: u8, message: String },
+    }
+
+    pub fn encode(msg: &ControlMessage) -> Vec<u8> {
+        let mut out = Vec::with_capacity(32);
+        out.extend_from_slice(&MAGIC);
+        out.push(VERSION);
+
+        match msg {
+            ControlMessage::Hello { requested_ipv4 } => {
+                out.push(TYPE_HELLO);
+                match requested_ipv4 {
+                    Some(ip) => {
+                        out.push(1);
+                        out.extend_from_slice(&ip.octets());
+                    }
+                    None => out.push(0),
+                }
+            }
+            ControlMessage::Assign { ipv4, prefix } => {
+                out.push(TYPE_ASSIGN);
+                out.extend_from_slice(&ipv4.octets());
+                out.push(*prefix);
+            }
+            ControlMessage::Nack { code, message } => {
+                out.push(TYPE_NACK);
+                out.push(*code);
+                let bytes = message.as_bytes();
+                let len = u8::try_from(bytes.len().min(255)).unwrap_or(255);
+                out.push(len);
+                out.extend_from_slice(&bytes[..len as usize]);
+            }
+        }
+
+        out
+    }
+
+    pub fn decode(payload: &[u8]) -> Option<ControlMessage> {
+        if payload.len() < 6 {
+            return None;
+        }
+        if payload[0..4] != MAGIC {
+            return None;
+        }
+        if payload[4] != VERSION {
+            return None;
+        }
+
+        let ty = payload[5];
+        match ty {
+            TYPE_HELLO => {
+                if payload.len() < 7 {
+                    return None;
+                }
+                let has = payload[6];
+                if has == 0 {
+                    return Some(ControlMessage::Hello {
+                        requested_ipv4: None,
+                    });
+                }
+                if payload.len() < 11 {
+                    return None;
+                }
+                let ip = Ipv4Addr::new(payload[7], payload[8], payload[9], payload[10]);
+                Some(ControlMessage::Hello {
+                    requested_ipv4: Some(ip),
+                })
+            }
+            TYPE_ASSIGN => {
+                if payload.len() < 11 {
+                    return None;
+                }
+                let ip = Ipv4Addr::new(payload[6], payload[7], payload[8], payload[9]);
+                let prefix = payload[10];
+                Some(ControlMessage::Assign { ipv4: ip, prefix })
+            }
+            TYPE_NACK => {
+                if payload.len() < 8 {
+                    return None;
+                }
+                let code = payload[6];
+                let len = payload[7] as usize;
+                if payload.len() < 8 + len {
+                    return None;
+                }
+                let msg = String::from_utf8_lossy(&payload[8..8 + len]).to_string();
+                Some(ControlMessage::Nack { code, message: msg })
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Protocol-related errors
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
@@ -380,5 +498,37 @@ mod tests {
         let buf = vec![0u8; 10]; // Too short
         let result = Packet::decode(&buf);
         assert!(matches!(result, Err(ProtocolError::InvalidLength { .. })));
+    }
+
+    #[test]
+    fn test_control_hello_roundtrip() {
+        let msg = control::ControlMessage::Hello {
+            requested_ipv4: Some(Ipv4Addr::new(10, 8, 0, 2)),
+        };
+        let wire = control::encode(&msg);
+        let decoded = control::decode(&wire).expect("decode should succeed");
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn test_control_assign_roundtrip() {
+        let msg = control::ControlMessage::Assign {
+            ipv4: Ipv4Addr::new(10, 8, 0, 42),
+            prefix: 24,
+        };
+        let wire = control::encode(&msg);
+        let decoded = control::decode(&wire).expect("decode should succeed");
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn test_control_nack_roundtrip() {
+        let msg = control::ControlMessage::Nack {
+            code: 7,
+            message: "nope".to_string(),
+        };
+        let wire = control::encode(&msg);
+        let decoded = control::decode(&wire).expect("decode should succeed");
+        assert_eq!(msg, decoded);
     }
 }

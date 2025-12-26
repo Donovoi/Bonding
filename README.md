@@ -53,7 +53,7 @@ The project is organized into three crates:
 - iptables or nftables for NAT
 - UDP port accessible from clients
 
-**Note**: Server TUN mode is currently supported on **Linux**. Running the server on Windows is possible in principle (Wintun exists), but NAT/forwarding is more complex; see the Tailscale section below.
+**Note**: Server TUN mode is supported on **Linux** and on **Windows (experimental)**.
 
 ### Server (Windows, experimental)
 
@@ -226,6 +226,21 @@ Both binaries provide a small terminal UI (TUI) as a usability layer.
 
 When `enable_tun=true`, the client and server forward real IP packets between the local TUN device and UDP.
 
+### Tunnel IPv4 assignment + anti-spoofing (TUN mode)
+
+When running in TUN mode, the server can manage multiple clients by assigning each client a unique **virtual IPv4** (“VIP”) inside the tunnel subnet (e.g. `198.18.0.0/24`).
+
+- The client periodically sends a control message `HELLO` (carried inside the normal UDP tunnel packets).
+- The server responds with `ASSIGN { ipv4, prefix }` (or `NACK { code, message }`).
+- If the client is configured with `tun_ipv4_addr`, it will request that address; the server may accept it or NACK it if it’s already in use or outside the configured tunnel subnet.
+
+Once the VIP is assigned:
+
+- **Anti-spoofing**: the server drops client→server data packets whose inner IPv4 source address does not match the session’s assigned VIP.
+- **Multi-client routing**: server→client packets (TUN→UDP) are routed by the inner IPv4 destination address to the matching assigned VIP. The server will not “guess” a destination once multiple clients exist.
+
+Compatibility note: if a client does not send `HELLO`, the server may fall back to implicitly pinning a session’s VIP to the inner IPv4 source address of the first IPv4 packet it sees (best-effort). The recommended setup is to configure the server with a tunnel subnet (via `tun_ipv4_addr`/`tun_ipv4_prefix`) and let the client/server handshake allocate the VIP.
+
 By default, configurations ship with `enable_tun=false` as a safe default.
 
 ## Tailscale coexistence
@@ -340,7 +355,7 @@ at your option.
 - [x] Basic encryption support
 - [x] Embedded Wintun DLL support for Windows client
 - [ ] Full Wintun FFI implementation
-- [ ] Linux TUN support
+- [x] Linux TUN support
 - [ ] Complete client/server applications
 - [x] Basic configuration file support (TOML)
 - [x] Terminal UI (TUI) to start/stop and view logs
