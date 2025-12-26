@@ -211,6 +211,7 @@ at your option.
 - [x] Core protocol implementation
 - [x] Scheduler and reorder buffer
 - [x] Basic encryption support
+- [x] Embedded Wintun DLL support for Windows client
 - [ ] Full Wintun FFI implementation
 - [ ] Linux TUN support
 - [ ] Complete client/server applications
