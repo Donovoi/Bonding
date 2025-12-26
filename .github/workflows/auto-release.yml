@@ -39,7 +39,7 @@ jobs:
           CURRENT_VERSION=$(awk '
             /^\[workspace\.package\]/ { in_section=1; next }
             /^\[/ { in_section=0 }
-            in_section && /^version/ { gsub(/[" ]/, "", $3); print $3; exit }
+            in_section && /^version/ { gsub(/"/, "", $3); print $3; exit }
           ' Cargo.toml)
           echo "Current version: $CURRENT_VERSION"
 
@@ -48,7 +48,7 @@ jobs:
           OLD_VERSION=$(git show HEAD~1:Cargo.toml | awk '
             /^\[workspace\.package\]/ { in_section=1; next }
             /^\[/ { in_section=0 }
-            in_section && /^version/ { gsub(/[" ]/, "", $3); print $3; exit }
+            in_section && /^version/ { gsub(/"/, "", $3); print $3; exit }
           ')
 
           if [ "$OLD_VERSION" != "$CURRENT_VERSION" ]; then
@@ -251,15 +251,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Check if tag already exists
-          if git rev-parse "$VERSION" >/dev/null 2>&1; then
-            echo "Tag $VERSION already exists, skipping tag creation"
-            echo "tag_exists=true" >> $GITHUB_OUTPUT
-          else
-            git tag -a "$VERSION" -m "Release $VERSION"
-            git push origin "$VERSION"
-            echo "tag_exists=false" >> $GITHUB_OUTPUT
+          # Check if tag already exists (locally or remotely)
+          if git ls-remote --tags origin | grep -q "refs/tags/$VERSION$"; then
+            echo "::error::Tag $VERSION already exists! Cannot create duplicate release."
+            echo "::error::If you need to release again, increment the version number."
+            exit 1
           fi
+
+          # Create and push tag
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION"
+          echo "✓ Created and pushed tag $VERSION"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
