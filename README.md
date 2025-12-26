@@ -55,6 +55,12 @@ The project is organized into three crates:
 
 **Note**: Server TUN mode is currently supported on **Linux**. Running the server on Windows is possible in principle (Wintun exists), but NAT/forwarding is more complex; see the Tailscale section below.
 
+### Server (Windows, experimental)
+
+- Windows 11 (or Windows 10) with Administrator privileges
+- `wintun.dll` available (either embedded at build time via `resources/wintun_*.dll`, or present next to the executable)
+- For full-tunnel NAT: PowerShell NetNat cmdlets (`New-NetNat`)
+
 ## Building
 
 ```bash
@@ -167,6 +173,30 @@ nat_masquerade_out_ifaces = ["tailscale0"]
 
 This setup requires root (or equivalent capabilities) because it configures `net.ipv4.ip_forward` and `iptables`.
 
+### Server Setup (Windows, experimental)
+
+On Windows, the server can run in TUN mode using Wintun. For a development build, ensure `wintun.dll` is next to `bonding-server.exe` (or build with `resources/wintun_*.dll` present to embed it).
+
+To enable Windows NAT for full-tunnel (best-effort), use NetNat:
+
+```toml
+enable_tun = true
+auto_config_tun = true
+tun_device_name = "Bonding"
+tun_mtu = 1420
+tun_ipv4_addr = "198.18.0.1"
+tun_ipv4_prefix = 24
+tun_routes = ["0.0.0.0/0"]
+
+# Best-effort Windows forwarding + NetNat
+enable_ipv4_forwarding = true
+windows_enable_netnat = true
+windows_netnat_name = "Bonding"
+# windows_netnat_internal_prefix = "198.18.0.0/24" # optional override
+```
+
+If NetNat cmdlets are not available on your Windows edition, use a Linux server (recommended) or run the server in WSL2.
+
 ## Configuration
 
 Both `bonding-client` and `bonding-server` support a TOML config file.
@@ -215,6 +245,18 @@ nat_masquerade_out_ifaces = ["tailscale0"]
 ```
 
 This provides outbound access to tailnet resources from tunnel clients. If you need tailnet devices to initiate connections back to tunnel clients, you likely want subnet-route advertisement instead (not implemented here).
+
+### Full tunnel + Tailscale on the server (Windows, best-effort)
+
+If the server runs Tailscale on Windows and you want tunnel clients to access the tailnet, enable NetNat and forwarding:
+
+```toml
+enable_ipv4_forwarding = true
+windows_enable_netnat = true
+windows_netnat_name = "Bonding"
+```
+
+This uses PowerShell NetNat (`New-NetNat`) and typically requires Administrator privileges.
 
 ## Troubleshooting
 

@@ -150,11 +150,34 @@ fn ui_loop(
                 Line::from(format!("Config: {}", config_path.display())),
                 Line::from(format!("Bind: {}:{}", cfg.listen_addr, cfg.listen_port)),
                 Line::from(format!("TUN forwarding: {}", cfg.enable_tun)),
-                Line::from(format!("TUN device: {} | MTU: {}", cfg.tun_device_name, cfg.tun_mtu)),
+                Line::from(format!("Auto-config TUN: {}", cfg.auto_config_tun)),
+                Line::from(format!(
+                    "TUN device: {} | MTU: {}",
+                    cfg.tun_device_name, cfg.tun_mtu
+                )),
+                Line::from(format!(
+                    "TUN IPv4: {} /{}",
+                    cfg.tun_ipv4_addr
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_else(|| "<unset>".to_string()),
+                    cfg.tun_ipv4_prefix
+                )),
+                Line::from(format!("TUN routes: {}", cfg.tun_routes.len())),
+                Line::from(format!(
+                    "IPv4 forwarding (server): {}",
+                    cfg.enable_ipv4_forwarding
+                )),
+                Line::from(format!(
+                    "Windows NetNat: {} (name='{}')",
+                    cfg.windows_enable_netnat, cfg.windows_netnat_name
+                )),
                 Line::from(format!("Encryption: {}", cfg.enable_encryption)),
                 Line::from(format!(
                     "Encryption key configured: {}",
-                    cfg.encryption_key_b64.as_ref().map(|s| !s.is_empty()).unwrap_or(false)
+                    cfg.encryption_key_b64
+                        .as_ref()
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false)
                 )),
                 Line::from(format!("Health interval: {:?}", cfg.health_interval)),
             ]);

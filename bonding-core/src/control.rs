@@ -140,6 +140,23 @@ pub struct ServerConfig {
     #[serde(default)]
     pub nat_masquerade_out_ifaces: Vec<String>,
 
+    /// Enable Windows NAT using NetNat (PowerShell) for traffic from the Bonding
+    /// TUN subnet (Windows only).
+    ///
+    /// Safe default: false.
+    #[serde(default)]
+    pub windows_enable_netnat: bool,
+
+    /// Name to use for the NetNat instance (Windows only).
+    #[serde(default = "default_windows_netnat_name")]
+    pub windows_netnat_name: String,
+
+    /// Internal prefix for NetNat (CIDR string), e.g. "198.18.0.0/24".
+    ///
+    /// If not set, the server derives it from `tun_ipv4_addr` + `tun_ipv4_prefix`.
+    #[serde(default)]
+    pub windows_netnat_internal_prefix: Option<String>,
+
     /// Linux TUN device name (used when `enable_tun` is enabled).
     #[serde(default)]
     pub tun_device_name: String,
@@ -173,6 +190,9 @@ impl Default for ServerConfig {
             tun_routes: Vec::new(),
             enable_ipv4_forwarding: false,
             nat_masquerade_out_ifaces: Vec::new(),
+            windows_enable_netnat: false,
+            windows_netnat_name: default_windows_netnat_name(),
+            windows_netnat_internal_prefix: None,
             tun_device_name: "bonding0".to_string(),
             tun_mtu: 1420,
             enable_encryption: true,
@@ -180,6 +200,10 @@ impl Default for ServerConfig {
             health_interval: Duration::from_secs(5),
         }
     }
+}
+
+fn default_windows_netnat_name() -> String {
+    "Bonding".to_string()
 }
 
 /// Network interface information

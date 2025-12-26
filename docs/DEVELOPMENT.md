@@ -71,9 +71,13 @@ Bonding/
 │   ├── build.rs           # Build script (embeds Wintun)
 │   └── Cargo.toml
 ├── bonding-server/        # Linux server
+│   ├── build.rs           # Build script (optionally embeds Wintun on Windows)
 │   ├── src/main.rs
 │   ├── src/linux_tun_config.rs  # Linux: IP/route setup for TUN
 │   ├── src/linux_nat_config.rs  # Linux: forwarding/NAT (MASQUERADE) helpers
+│   ├── src/wintun_loader.rs      # Windows: ensure wintun.dll (embedded or beside exe)
+│   ├── src/windows_tun_config.rs # Windows: adapter IP/MTU/route setup
+│   ├── src/windows_nat_config.rs # Windows: forwarding + NetNat setup
 │   └── Cargo.toml
 ├── resources/             # Embedded binary resources
 │   ├── README.md          # Resource documentation

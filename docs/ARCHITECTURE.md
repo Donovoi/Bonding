@@ -280,6 +280,12 @@ This is implemented as an optional server-side startup configuration (Linux only
 - `POSTROUTING -j MASQUERADE` from the tunnel subnet to `tailscale0`
 - `FORWARD` allow rules (including `RELATED,ESTABLISHED` return traffic)
 
+#### Windows server mode (experimental)
+
+The server can also run on Windows using Wintun for the TUN device. For full-tunnel NAT/forwarding, Windows uses NetNat (PowerShell cmdlets like `New-NetNat`) rather than iptables/nft.
+
+Linux remains the recommended server platform for predictable NAT/forwarding behavior.
+
 ### Scaling
 
 Single server can handle:
