@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  WINTUN_VERSION: "0.14.1"
+  WINTUN_SHA256: "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
 
 permissions:
   contents: read
@@ -98,28 +100,38 @@ jobs:
         shell: pwsh
         run: |
           # Download Wintun
-          $wintunVersion = "0.14.1"
+          $wintunVersion = "${{ env.WINTUN_VERSION }}"
           $wintunUrl = "https://www.wintun.net/builds/wintun-$wintunVersion.zip"
           $wintunZip = "wintun.zip"
-          
+          $expectedHash = "${{ env.WINTUN_SHA256 }}"
+
           Write-Host "Downloading Wintun $wintunVersion..."
           Invoke-WebRequest -Uri $wintunUrl -OutFile $wintunZip
-          
+
+          # Verify checksum for security
+          Write-Host "Verifying checksum..."
+          $actualHash = (Get-FileHash -Path $wintunZip -Algorithm SHA256).Hash.ToLower()
+          if ($actualHash -ne $expectedHash) {
+            Write-Error "Checksum verification failed! Expected: $expectedHash, Got: $actualHash"
+            exit 1
+          }
+          Write-Host "✓ Checksum verified successfully"
+
           # Extract and organize DLLs
           Write-Host "Extracting Wintun..."
           Expand-Archive -Path $wintunZip -DestinationPath wintun-temp
-          
+
           # Create resources directory
           New-Item -ItemType Directory -Force -Path resources
-          
+
           # Copy and rename DLLs for each architecture
           Copy-Item "wintun-temp/wintun/bin/amd64/wintun.dll" "resources/wintun_amd64.dll"
           Copy-Item "wintun-temp/wintun/bin/x86/wintun.dll" "resources/wintun_x86.dll"
           Copy-Item "wintun-temp/wintun/bin/arm64/wintun.dll" "resources/wintun_arm64.dll"
           Copy-Item "wintun-temp/wintun/bin/arm/wintun.dll" "resources/wintun_arm.dll"
-          
+
           Write-Host "Wintun DLLs prepared in resources directory"
-          
+
           # Clean up
           Remove-Item -Recurse -Force wintun-temp
           Remove-Item $wintunZip
