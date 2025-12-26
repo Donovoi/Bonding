@@ -26,8 +26,7 @@ fn run(cmd: &str, args: &[String]) -> Result<String> {
 }
 
 fn write_proc(path: &str, value: &str) -> Result<()> {
-    std::fs::write(path, value)
-        .with_context(|| format!("failed to write '{value}' to {path}"))?;
+    std::fs::write(path, value).with_context(|| format!("failed to write '{value}' to {path}"))?;
     Ok(())
 }
 

@@ -265,7 +265,7 @@ async fn run_client_tun_mode(
 
     let tun_thread = thread::spawn(move || {
         let mut tun = tun;
-        let mut buf = vec![0u8; mtu.max(1500).min(65535)];
+        let mut buf = vec![0u8; mtu.clamp(1500, 65535)];
 
         while !stop_flag_thread.load(Ordering::Relaxed) {
             // Drain outbound packets to the TUN adapter.
@@ -283,10 +283,8 @@ async fn run_client_tun_mode(
 
             match tun.read_packet(&mut buf) {
                 Ok(n) => {
-                    if n > 0 {
-                        if tun_to_net_tx.blocking_send(buf[..n].to_vec()).is_err() {
-                            return;
-                        }
+                    if n > 0 && tun_to_net_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        return;
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {

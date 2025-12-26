@@ -256,13 +256,15 @@ async fn run_server_tun_mode_windows(
     if cfg.enable_ipv4_forwarding || cfg.windows_enable_netnat {
         if let Some(tun_ip) = cfg.tun_ipv4_addr {
             crate::windows_nat_config::configure_windows_forwarding_and_netnat(
-                tun.name(),
-                tun_ip,
-                cfg.tun_ipv4_prefix,
-                cfg.enable_ipv4_forwarding,
-                cfg.windows_enable_netnat,
-                &cfg.windows_netnat_name,
-                cfg.windows_netnat_internal_prefix.as_deref(),
+                crate::windows_nat_config::WindowsNetNatOptions {
+                    tun_interface_alias: tun.name(),
+                    tun_ipv4: tun_ip,
+                    tun_prefix: cfg.tun_ipv4_prefix,
+                    enable_forwarding: cfg.enable_ipv4_forwarding,
+                    enable_netnat: cfg.windows_enable_netnat,
+                    netnat_name: &cfg.windows_netnat_name,
+                    internal_prefix_override: cfg.windows_netnat_internal_prefix.as_deref(),
+                },
                 &|m| (log.as_ref())(m),
             )?;
         } else {
@@ -285,7 +287,7 @@ async fn run_server_tun_mode_windows(
 
     let tun_thread = thread::spawn(move || {
         let mut tun = tun;
-        let mut buf = vec![0u8; mtu.max(1500).min(65535)];
+        let mut buf = vec![0u8; mtu.clamp(1500, 65535)];
 
         while !stop_flag_thread.load(Ordering::Relaxed) {
             // Drain queued packets from UDP to TUN.
@@ -303,10 +305,8 @@ async fn run_server_tun_mode_windows(
 
             match tun.read_packet(&mut buf) {
                 Ok(n) => {
-                    if n > 0 {
-                        if tun_to_net_tx.blocking_send(buf[..n].to_vec()).is_err() {
-                            return;
-                        }
+                    if n > 0 && tun_to_net_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        return;
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {

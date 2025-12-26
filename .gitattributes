@@ -1,0 +1,20 @@
+# Normalize line endings in the repo to avoid cross-platform diffs.
+#
+# Default: keep text files as LF in the repository and working tree.
+* text=auto eol=lf
+
+# Rust
+*.rs text eol=lf
+Cargo.toml text eol=lf
+Cargo.lock text eol=lf
+
+# Docs
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Scripts
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf

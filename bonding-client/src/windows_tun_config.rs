@@ -1,5 +1,3 @@
-#![cfg(target_os = "windows")]
-
 use anyhow::{bail, Context, Result};
 use std::net::Ipv4Addr;
 use std::process::Command;
