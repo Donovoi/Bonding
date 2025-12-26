@@ -27,7 +27,7 @@ const DEFAULT_MTU: usize = 1420;
 const ADAPTER_NAME: &str = "Bonding";
 
 /// Wintun adapter GUID (tunnel type identifier)
-/// 
+///
 /// This GUID was generated specifically for the Bonding project and serves as a unique
 /// identifier for the tunnel type. It helps Windows distinguish Bonding adapters from
 /// other Wintun-based VPN applications. This GUID is consistent across all Bonding
@@ -81,9 +81,9 @@ impl WintunDevice {
         };
 
         // Parse GUID
-        let guid = ADAPTER_GUID
-            .parse()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid GUID: {}", e)))?;
+        let guid = ADAPTER_GUID.parse().map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid GUID: {}", e))
+        })?;
 
         // Create or open adapter
         let adapter = match Adapter::open(&wintun, adapter_name) {
@@ -103,12 +103,14 @@ impl WintunDevice {
         };
 
         // Start a session with ring buffer capacity of 0x400000 bytes (4MB)
-        let session = adapter.start_session(wintun::MAX_RING_CAPACITY).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to start Wintun session: {}", e),
-            )
-        })?;
+        let session = adapter
+            .start_session(wintun::MAX_RING_CAPACITY)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to start Wintun session: {}", e),
+                )
+            })?;
 
         tracing::info!(
             "Created Wintun adapter '{}' with MTU {}",
@@ -158,7 +160,10 @@ impl TunDevice for WintunDevice {
                         io::ErrorKind::ConnectionAborted,
                         "Wintun session is shutting down",
                     )),
-                    _ => Err(io::Error::new(io::ErrorKind::WouldBlock, "No packet available")),
+                    _ => Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "No packet available",
+                    )),
                 }
             }
         }
@@ -184,12 +189,15 @@ impl TunDevice for WintunDevice {
         }
 
         // Allocate send packet
-        let mut packet = self.session.allocate_send_packet(buf.len() as u16).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::OutOfMemory,
-                format!("Failed to allocate send packet: {}", e),
-            )
-        })?;
+        let mut packet = self
+            .session
+            .allocate_send_packet(buf.len() as u16)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    format!("Failed to allocate send packet: {}", e),
+                )
+            })?;
 
         // Copy data to packet
         packet.bytes_mut().copy_from_slice(buf);
@@ -234,7 +242,10 @@ mod tests {
             }
             Err(e) => {
                 // Expected to fail without admin privileges or wintun.dll
-                eprintln!("Note: Test failed as expected without admin/wintun.dll: {}", e);
+                eprintln!(
+                    "Note: Test failed as expected without admin/wintun.dll: {}",
+                    e
+                );
             }
         }
     }

@@ -99,9 +99,9 @@ impl LinuxTunDevice {
                 )
             })?;
 
-        let actual_name = device.name().map_err(|e| {
-            io::Error::other(format!("Failed to get device name: {}", e))
-        })?;
+        let actual_name = device
+            .name()
+            .map_err(|e| io::Error::other(format!("Failed to get device name: {}", e)))?;
 
         tracing::info!(
             "Created Linux TUN device '{}' with MTU {}",
