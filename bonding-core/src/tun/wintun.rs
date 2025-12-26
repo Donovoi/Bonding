@@ -150,7 +150,7 @@ impl TunDevice for WintunDevice {
     fn read_packet(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // Try to receive a packet (non-blocking)
         match self.session.try_receive() {
-            Ok(packet) => {
+            Ok(Some(packet)) => {
                 let packet_bytes = packet.bytes();
                 let len = packet_bytes.len();
 
@@ -168,6 +168,13 @@ impl TunDevice for WintunDevice {
                 buf[..len].copy_from_slice(packet_bytes);
                 Ok(len)
             }
+            Ok(None) => {
+                // No packet available (non-blocking mode)
+                Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "No packet available",
+                ))
+            }
             Err(e) => {
                 // Convert wintun error to io::Error
                 match e {
@@ -176,8 +183,8 @@ impl TunDevice for WintunDevice {
                         "Wintun session is shutting down",
                     )),
                     _ => Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        "No packet available",
+                        io::ErrorKind::Other,
+                        format!("Wintun error: {}", e),
                     )),
                 }
             }
