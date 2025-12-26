@@ -286,15 +286,27 @@ The server can also run on Windows using Wintun for the TUN device. For full-tun
 
 Linux remains the recommended server platform for predictable NAT/forwarding behavior.
 
+#### Multi-client routing (experimental)
+
+The TUN-mode server can track multiple clients, but routing is still intentionally simple:
+
+- The server learns a client "virtual IP" (inner IPv4 source address) by observing client→server packets.
+- When sending kernel→client traffic (TUN→UDP), it routes packets by the inner IPv4 destination address.
+- Once at least one client IP has been learned, the server will **not guess** a destination for unknown packets (to avoid sending one client's traffic to another).
+
+This requires that each client uses a unique tunnel IPv4 address within the tunnel subnet and that the server OS routes that subnet via the TUN interface.
+
+#### Backpressure / queueing
+
+Windows TUN-mode pumps use a bounded UDP→TUN queue and may drop packets if the queue is full. This prevents unbounded memory growth under load.
+
+#### Routing / DNS UX
+
+Full-tunnel routing interacts with existing host routes (including Tailscale). DNS configuration is not currently managed automatically; plan explicitly how clients should resolve DNS when the default route is redirected.
+
 ### Scaling
 
-Single server can handle:
-- ~1000 concurrent clients (estimate)
-- Limited by UDP packet processing and encryption
-
-For more clients:
-- Multiple servers with client-side load balancing
-- Or dedicated server per client for maximum performance
+Scaling is not yet benchmarked. Practical capacity will be limited by UDP packet processing, encryption cost, and OS forwarding/NAT behavior.
 
 ## Testing Strategy
 

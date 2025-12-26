@@ -176,8 +176,8 @@ async fn run_client_tun_mode(
 ) -> Result<()> {
     use bonding_core::tun::{TunDevice, WintunDevice};
     use std::io;
-    use std::sync::mpsc;
     use std::thread;
+    use tokio::sync::mpsc;
 
     (log.as_ref())(format!(
         "Client starting TUN mode: adapter='{}' mtu={} server={}:{}",
@@ -213,6 +213,10 @@ async fn run_client_tun_mode(
         .unwrap_or_default()
         .as_nanos() as u64;
     let mut tx_seq: u64 = 1;
+
+    const NET_TO_TUN_QUEUE: usize = 1024;
+    let mut dropped_net_to_tun: u64 = 0;
+    let mut dropped_net_to_tun_last: u64 = 0;
 
     // Bind an ephemeral UDP socket.
     let sock = UdpSocket::bind("0.0.0.0:0")
@@ -253,8 +257,8 @@ async fn run_client_tun_mode(
         }
     }
 
-    // Channel: UDP -> TUN (sync, unbounded).
-    let (net_to_tun_tx, net_to_tun_rx) = mpsc::channel::<Vec<u8>>();
+    // Channel: UDP -> TUN (bounded; drop on overflow).
+    let (net_to_tun_tx, mut net_to_tun_rx) = mpsc::channel::<Vec<u8>>(NET_TO_TUN_QUEUE);
 
     // Channel: TUN -> UDP (tokio, bounded).
     let (tun_to_net_tx, mut tun_to_net_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
@@ -277,8 +281,8 @@ async fn run_client_tun_mode(
                             (log_thread.as_ref())(format!("TUN write error: {e}"));
                         }
                     }
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => return,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return,
                 }
             }
 
@@ -327,6 +331,14 @@ async fn run_client_tun_mode(
 
                 let _ = sock.send_to(&wire, server).await;
                 tx_seq = tx_seq.wrapping_add(1);
+
+                let dropped_delta = dropped_net_to_tun.saturating_sub(dropped_net_to_tun_last);
+                dropped_net_to_tun_last = dropped_net_to_tun;
+                if dropped_delta > 0 {
+                    (log.as_ref())(format!(
+                        "Warning: dropped {dropped_delta} UDP->TUN packets due to full queue (total dropped={dropped_net_to_tun})"
+                    ));
+                }
             }
 
             maybe_pkt = tun_to_net_rx.recv() => {
@@ -384,7 +396,9 @@ async fn run_client_tun_mode(
                     continue;
                 }
 
-                let _ = net_to_tun_tx.send(payload);
+                if let Err(_e) = net_to_tun_tx.try_send(payload) {
+                    dropped_net_to_tun = dropped_net_to_tun.wrapping_add(1);
+                }
             }
 
             _ = stop.changed() => {
