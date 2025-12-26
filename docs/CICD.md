@@ -167,7 +167,8 @@ git push origin v0.2.0
 You can add status badges to README.md:
 
 ```markdown
-![CI](https://github.com/Donovoi/Bonding/workflows/CI/badge.svg)
+![CI](https://github.com/Donovoi/Bonding/actions/workflows/ci.yml/badge.svg)
+![Auto Release](https://github.com/Donovoi/Bonding/actions/workflows/auto-release.yml/badge.svg)
 ```
 
 ### Notifications
@@ -280,10 +281,11 @@ The workflows use minimal required permissions:
 - Review dependencies for vulnerabilities
 - **Wintun DLL Security:**
   - Downloaded from official source (wintun.net)
-  - SHA256 checksum verified before use
+  - SHA256 checksum verified before use in all workflows
+  - Applies to CI (`ci.yml`), auto-release (`auto-release.yml`), and manual release (`release.yml`)
   - Prevents tampering during download
-  - **Important:** When updating `WINTUN_VERSION`, also update `WINTUN_SHA256` in the workflow's env section
-  - Both values are defined at the top of `auto-release.yml` for easy maintenance
+  - **Important:** When updating `WINTUN_VERSION`, also update `WINTUN_SHA256` in all three workflow files
+  - Both values are defined at the top of each workflow's `env:` section for easy maintenance
 
 ## Future Improvements
 
