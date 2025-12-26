@@ -1,5 +1,3 @@
-#![cfg(target_os = "windows")]
-
 use anyhow::{bail, Context, Result};
 use std::net::Ipv4Addr;
 use std::process::Command;
@@ -10,7 +8,11 @@ fn ipv4_network_cidr(ip: Ipv4Addr, prefix: u8) -> Result<String> {
     }
 
     let ip_u32 = u32::from_be_bytes(ip.octets());
-    let mask: u32 = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+    let mask: u32 = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
     let net_u32 = ip_u32 & mask;
     let net_ip = Ipv4Addr::from(net_u32.to_be_bytes());
     Ok(format!("{net_ip}/{prefix}"))
@@ -52,6 +54,22 @@ fn run_ps(script: &str) -> Result<String> {
     bail!("neither powershell nor pwsh was found on PATH")
 }
 
+fn ps_escape_single_quoted_string(s: &str) -> String {
+    // PowerShell single-quoted strings escape a literal single quote by doubling it.
+    // Example:  abc'def  ->  'abc''def'
+    s.replace("'", "''")
+}
+
+pub struct WindowsNetNatOptions<'a> {
+    pub tun_interface_alias: &'a str,
+    pub tun_ipv4: Ipv4Addr,
+    pub tun_prefix: u8,
+    pub enable_forwarding: bool,
+    pub enable_netnat: bool,
+    pub netnat_name: &'a str,
+    pub internal_prefix_override: Option<&'a str>,
+}
+
 /// Configure Windows forwarding + NAT using NetNat (best-effort).
 ///
 /// This is intended to support the "Option A" experience on Windows:
@@ -62,27 +80,33 @@ fn run_ps(script: &str) -> Result<String> {
 /// - Requires NetNat cmdlets (New-NetNat/Get-NetNat), typically available on
 ///   Windows 10/11.
 pub fn configure_windows_forwarding_and_netnat(
-    tun_interface_alias: &str,
-    tun_ipv4: Ipv4Addr,
-    tun_prefix: u8,
-    enable_forwarding: bool,
-    enable_netnat: bool,
-    netnat_name: &str,
-    internal_prefix_override: Option<&str>,
+    opts: WindowsNetNatOptions<'_>,
     log: &dyn Fn(String),
 ) -> Result<()> {
-    if !enable_forwarding && !enable_netnat {
+    if !opts.enable_forwarding && !opts.enable_netnat {
         return Ok(());
     }
 
-    let internal_prefix = match internal_prefix_override {
+    let internal_prefix = match opts.internal_prefix_override {
         Some(p) if !p.trim().is_empty() => p.trim().to_string(),
-        _ => ipv4_network_cidr(tun_ipv4, tun_prefix)?,
+        _ => ipv4_network_cidr(opts.tun_ipv4, opts.tun_prefix)?,
+    };
+
+    let enable_forwarding_ps = if opts.enable_forwarding {
+        "$true"
+    } else {
+        "$false"
+    };
+    let enable_netnat_ps = if opts.enable_netnat {
+        "$true"
+    } else {
+        "$false"
     };
 
     // Escape single quotes for PowerShell single-quoted strings.
-    let alias = tun_interface_alias.replace('"', "");
-    let name = netnat_name.replace('"', "");
+    let alias = ps_escape_single_quoted_string(opts.tun_interface_alias);
+    let name = ps_escape_single_quoted_string(opts.netnat_name);
+    let internal_prefix = ps_escape_single_quoted_string(&internal_prefix);
 
     // Build a single script with explicit output to help troubleshooting.
     let script = format!(
@@ -100,22 +124,22 @@ $alias = '{alias}'
 $name = '{name}'
 $prefix = '{internal_prefix}'
 
-Write-Output ("Bonding: NetNat requested name='{name}' prefix='{internal_prefix}'")
+Write-Output ("Bonding: NetNat requested name='$name' prefix='$prefix'")
 
-if ({enable_forwarding}) {{
+if ({enable_forwarding_ps}) {{
   try {{
     if (Have-Cmd 'Set-NetIPInterface') {{
       Set-NetIPInterface -InterfaceAlias $alias -Forwarding Enabled -ErrorAction Stop | Out-Null
-      Write-Output ("Bonding: Enabled IP forwarding on interface '{alias}'")
+      Write-Output ("Bonding: Enabled IP forwarding on interface '$alias'")
     }} else {{
       Write-Output 'Bonding: Set-NetIPInterface not available; skipping forwarding enable.'
     }}
   }} catch {{
-    Write-Output ("Bonding: Warning: failed to enable forwarding on '{alias}': $($_.Exception.Message)")
+    Write-Output ("Bonding: Warning: failed to enable forwarding on '$alias': $($_.Exception.Message)")
   }}
 }}
 
-if ({enable_netnat}) {{
+if ({enable_netnat_ps}) {{
   if (-not (Have-Cmd 'New-NetNat')) {{
     throw 'New-NetNat not available.'
   }}
@@ -124,16 +148,16 @@ if ({enable_netnat}) {{
   if ($null -ne $existing) {{
     $prefixes = @($existing.InternalIPInterfaceAddressPrefix)
     if ($prefixes -contains $prefix) {{
-      Write-Output ("Bonding: NetNat '{name}' already exists with prefix '{internal_prefix}'")
+      Write-Output ("Bonding: NetNat '$name' already exists with prefix '$prefix'")
       exit 0
     }}
 
-    Write-Output ("Bonding: NetNat '{name}' exists but prefixes do not match; recreating")
+    Write-Output ("Bonding: NetNat '$name' exists but prefixes do not match; recreating")
     Remove-NetNat -Name $name -Confirm:$false | Out-Null
   }}
 
   New-NetNat -Name $name -InternalIPInterfaceAddressPrefix $prefix | Out-Null
-  Write-Output ("Bonding: Created NetNat '{name}' prefix '{internal_prefix}'")
+  Write-Output ("Bonding: Created NetNat '$name' prefix '$prefix'")
 }}
 "#
     );

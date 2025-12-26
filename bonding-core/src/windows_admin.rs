@@ -4,8 +4,6 @@
 //! Rather than failing later, we can proactively relaunch the current executable
 //! with the `runas` verb (UAC prompt) when not already elevated.
 
-#![cfg(target_os = "windows")]
-
 use anyhow::{Context, Result};
 use std::env;
 use std::ffi::OsStr;

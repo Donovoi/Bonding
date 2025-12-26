@@ -235,11 +235,7 @@ impl PacketCrypto {
     }
 
     /// Open a `proto::Packet` (verify/decrypt payload).
-    pub fn open_packet(
-        &self,
-        domain: u32,
-        packet: &Packet,
-    ) -> Result<Vec<u8>, TransportError> {
+    pub fn open_packet(&self, domain: u32, packet: &Packet) -> Result<Vec<u8>, TransportError> {
         // Basic sanity check before decrypt.
         if packet.header.payload_len as usize != packet.payload.len() {
             return Err(TransportError::Decryption);
@@ -317,9 +313,7 @@ mod tests {
         // Ensure we actually produced a tag.
         assert_ne!(pkt.auth_tag, [0u8; AUTH_TAG_SIZE]);
 
-        let opened = crypto
-            .open_packet(DOMAIN_A, &pkt)
-            .expect("open failed");
+        let opened = crypto.open_packet(DOMAIN_A, &pkt).expect("open failed");
         assert_eq!(opened.as_slice(), plaintext);
     }
 
