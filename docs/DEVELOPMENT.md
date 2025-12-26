@@ -55,25 +55,33 @@ Bonding/
 │   │   ├── lib.rs         # Library entry point
 │   │   ├── proto.rs       # Wire protocol
 │   │   ├── tun/           # TUN device
-│   │   │   └── wintun.rs  # Windows Wintun
+│   │   │   ├── wintun.rs  # Windows Wintun
+│   │   │   └── linux.rs   # Linux TUN (future)
 │   │   ├── transport.rs   # UDP + encryption
 │   │   ├── scheduler.rs   # Path selection
 │   │   ├── reorder.rs     # Packet reordering
 │   │   └── control.rs     # Configuration
 │   └── Cargo.toml
 ├── bonding-client/        # Windows client
-│   ├── src/main.rs
+│   ├── src/
+│   │   ├── main.rs        # Client entry point
+│   │   └── wintun_loader.rs # DLL loading/extraction
+│   ├── build.rs           # Build script (embeds Wintun)
 │   └── Cargo.toml
 ├── bonding-server/        # Linux server
 │   ├── src/main.rs
 │   └── Cargo.toml
+├── resources/             # Embedded binary resources
+│   ├── README.md          # Resource documentation
+│   └── wintun_*.dll       # Wintun DLLs (placed here for embedding)
 ├── docs/                  # Documentation
 │   ├── ARCHITECTURE.md
 │   ├── TESTING.md
 │   └── DEVELOPMENT.md
 ├── .github/
 │   └── workflows/
-│       └── ci.yml         # CI/CD pipeline
+│       ├── ci.yml         # CI/CD pipeline
+│       └── release.yml    # Release builds with embedded DLLs
 ├── Cargo.toml             # Workspace config
 └── README.md
 ```
@@ -164,6 +172,20 @@ Then create a pull request on GitHub.
 - Platform-specific code behind `cfg`
 - Test on actual hardware when possible
 
+### wintun_loader (Windows Client)
+
+- Handles DLL discovery and extraction
+- Checks for existing DLL before extraction
+- Gracefully handles missing embedded DLL
+- Provides clear error messages for users
+
+### build.rs (Build Scripts)
+
+- Embeds architecture-specific Wintun DLL at compile time
+- Generates code for embedded resources
+- Warns if resources are missing (non-fatal)
+- Supports cross-compilation for all Windows architectures
+
 ### scheduler (Bonding Logic)
 
 - Keep pure and deterministic
@@ -226,6 +248,35 @@ valgrind --tool=massif target/release/bonding-client
 ```
 
 ## Common Tasks
+
+### Building with Embedded Wintun (Windows)
+
+For development builds with embedded Wintun DLL:
+
+1. Download Wintun from [wintun.net](https://www.wintun.net/):
+```bash
+# PowerShell
+Invoke-WebRequest -Uri https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile wintun.zip
+Expand-Archive -Path wintun.zip -DestinationPath wintun
+```
+
+2. Copy DLLs to resources directory:
+```bash
+# PowerShell
+Copy-Item "wintun/wintun/bin/amd64/wintun.dll" "resources/wintun_amd64.dll"
+Copy-Item "wintun/wintun/bin/x86/wintun.dll" "resources/wintun_x86.dll"
+Copy-Item "wintun/wintun/bin/arm64/wintun.dll" "resources/wintun_arm64.dll"
+Copy-Item "wintun/wintun/bin/arm/wintun.dll" "resources/wintun_arm.dll"
+```
+
+3. Build normally:
+```bash
+cargo build --release
+```
+
+The build script will automatically detect and embed the appropriate DLL for your target architecture.
+
+**Note**: Release builds from GitHub Actions automatically include embedded DLLs. Manual DLL placement is only needed for local development builds.
 
 ### Add a New Dependency
 
