@@ -12,6 +12,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  WINTUN_VERSION: "0.14.1"
 
 permissions:
   contents: write
@@ -32,12 +33,17 @@ jobs:
       - name: Check if version changed
         id: version_check
         run: |
-          # Get current version from Cargo.toml
-          CURRENT_VERSION=$(grep -m 1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          # Get current workspace version from Cargo.toml
+          CURRENT_VERSION=$(awk '/^\[workspace\.package\]/{flag=1; next} /^\[/{flag=0} flag && /^version/{gsub(/[" ]/, "", $3); print $3}' Cargo.toml)
           echo "Current version: $CURRENT_VERSION"
 
-          # Check if version changed in the last commit
-          git diff HEAD~1 HEAD -- Cargo.toml | grep -q "^+version = " && VERSION_CHANGED=true || VERSION_CHANGED=false
+          # Check if workspace version changed in the last commit
+          # Extract the workspace.package section from the diff
+          if git diff HEAD~1 HEAD -- Cargo.toml | awk '/^\+\+\+ /{next} /^@@/{in_diff=1} in_diff && /\[workspace\.package\]/{in_section=1} in_diff && in_section && /^\[/ && !/\[workspace\.package\]/{in_section=0} in_section && /^\+version = /{found=1; exit} END{exit !found}'; then
+            VERSION_CHANGED=true
+          else
+            VERSION_CHANGED=false
+          fi
 
           echo "changed=$VERSION_CHANGED" >> $GITHUB_OUTPUT
           echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
@@ -120,12 +126,23 @@ jobs:
         shell: pwsh
         run: |
           # Download Wintun
-          $wintunVersion = "0.14.1"
+          $wintunVersion = "${{ env.WINTUN_VERSION }}"
           $wintunUrl = "https://www.wintun.net/builds/wintun-$wintunVersion.zip"
           $wintunZip = "wintun.zip"
+          # SHA256 checksum for Wintun 0.14.1 (verify at https://www.wintun.net/)
+          $expectedHash = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
 
           Write-Host "Downloading Wintun $wintunVersion..."
           Invoke-WebRequest -Uri $wintunUrl -OutFile $wintunZip
+
+          # Verify checksum for security
+          Write-Host "Verifying checksum..."
+          $actualHash = (Get-FileHash -Path $wintunZip -Algorithm SHA256).Hash.ToLower()
+          if ($actualHash -ne $expectedHash) {
+            Write-Error "Checksum verification failed! Expected: $expectedHash, Got: $actualHash"
+            exit 1
+          }
+          Write-Host "✓ Checksum verified successfully"
 
           # Extract and organize DLLs
           Write-Host "Extracting Wintun..."
