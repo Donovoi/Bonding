@@ -8,8 +8,12 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
+
+fn default_tun_ipv4_prefix() -> u8 {
+    24
+}
 
 /// Configuration for the bonding client
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,8 +28,45 @@ pub struct BondingConfig {
     pub adapter_name: String,
     /// TUN adapter MTU
     pub mtu: usize,
+
+    /// Enable TUN packet forwarding (data-plane).
+    ///
+    /// When enabled, the client will attempt to read IP packets from the local
+    /// TUN adapter and forward them to the server over UDP.
+    #[serde(default)]
+    pub enable_tun: bool,
+
+    /// Automatically configure the local TUN adapter with IP/MTU/routes.
+    ///
+    /// Safe default: false. When enabled, platform-specific commands may be
+    /// executed (Windows: netsh/route; Linux: ip).
+    #[serde(default)]
+    pub auto_config_tun: bool,
+
+    /// IPv4 address to assign to the local TUN adapter.
+    ///
+    /// Only used when `enable_tun` and `auto_config_tun` are true.
+    #[serde(default)]
+    pub tun_ipv4_addr: Option<Ipv4Addr>,
+
+    /// IPv4 prefix length to use with `tun_ipv4_addr` (e.g. 24 for /24).
+    #[serde(default = "default_tun_ipv4_prefix")]
+    pub tun_ipv4_prefix: u8,
+
+    /// Optional routes (CIDR strings) to add via the TUN adapter.
+    ///
+    /// Examples: "10.10.0.0/16", "0.0.0.0/0".
+    #[serde(default)]
+    pub tun_routes: Vec<String>,
     /// Enable encryption
     pub enable_encryption: bool,
+
+    /// Base64-encoded 32-byte pre-shared key used for packet encryption.
+    ///
+    /// If `enable_encryption` is true, client/server must be configured with the
+    /// same key.
+    #[serde(default)]
+    pub encryption_key_b64: Option<String>,
     /// Health check interval
     #[serde(with = "humantime_serde")]
     pub health_check_interval: Duration,
@@ -39,7 +80,13 @@ impl Default for BondingConfig {
             bonding_mode: "stripe".to_string(),
             adapter_name: "Bonding".to_string(),
             mtu: 1420,
+            enable_tun: false,
+            auto_config_tun: false,
+            tun_ipv4_addr: None,
+            tun_ipv4_prefix: default_tun_ipv4_prefix(),
+            tun_routes: Vec::new(),
             enable_encryption: true,
+            encryption_key_b64: None,
             health_check_interval: Duration::from_secs(5),
         }
     }
@@ -52,8 +99,63 @@ pub struct ServerConfig {
     pub listen_addr: String,
     /// Port to bind the UDP socket to
     pub listen_port: u16,
+
+    /// Enable TUN packet forwarding (data-plane).
+    ///
+    /// When enabled on Linux, the server will attempt to read/write IP packets
+    /// from/to a local TUN device and forward them over UDP.
+    #[serde(default)]
+    pub enable_tun: bool,
+
+    /// Automatically configure the local TUN device with IP/MTU/routes.
+    ///
+    /// Safe default: false.
+    #[serde(default)]
+    pub auto_config_tun: bool,
+
+    /// IPv4 address to assign to the server-side TUN device.
+    #[serde(default)]
+    pub tun_ipv4_addr: Option<Ipv4Addr>,
+
+    /// IPv4 prefix length to use with `tun_ipv4_addr`.
+    #[serde(default = "default_tun_ipv4_prefix")]
+    pub tun_ipv4_prefix: u8,
+
+    /// Optional routes (CIDR strings) to add via the TUN device.
+    #[serde(default)]
+    pub tun_routes: Vec<String>,
+
+    /// Enable IPv4 forwarding on the server (Linux only).
+    ///
+    /// Required for routing packets between the Bonding TUN device and other
+    /// interfaces (e.g. `tailscale0` for tailnet access, or `eth0` for WAN).
+    #[serde(default)]
+    pub enable_ipv4_forwarding: bool,
+
+    /// Add IPv4 NAT (MASQUERADE) rules for traffic sourced from the Bonding TUN
+    /// subnet and leaving via the given output interfaces (Linux only).
+    ///
+    /// Example for "Option A" (tailnet access from tunnel clients):
+    /// ["tailscale0"].
+    #[serde(default)]
+    pub nat_masquerade_out_ifaces: Vec<String>,
+
+    /// Linux TUN device name (used when `enable_tun` is enabled).
+    #[serde(default)]
+    pub tun_device_name: String,
+
+    /// Linux TUN MTU (used when `enable_tun` is enabled).
+    #[serde(default)]
+    pub tun_mtu: usize,
     /// Enable encryption (future)
     pub enable_encryption: bool,
+
+    /// Base64-encoded 32-byte pre-shared key used for packet encryption.
+    ///
+    /// If `enable_encryption` is true, the server will attempt to decrypt inbound
+    /// packets using this key.
+    #[serde(default)]
+    pub encryption_key_b64: Option<String>,
     /// Health/logging interval
     #[serde(with = "humantime_serde")]
     pub health_interval: Duration,
@@ -64,7 +166,17 @@ impl Default for ServerConfig {
         Self {
             listen_addr: "0.0.0.0".to_string(),
             listen_port: 5000,
+            enable_tun: false,
+            auto_config_tun: false,
+            tun_ipv4_addr: None,
+            tun_ipv4_prefix: default_tun_ipv4_prefix(),
+            tun_routes: Vec::new(),
+            enable_ipv4_forwarding: false,
+            nat_masquerade_out_ifaces: Vec::new(),
+            tun_device_name: "bonding0".to_string(),
+            tun_mtu: 1420,
             enable_encryption: true,
+            encryption_key_b64: None,
             health_interval: Duration::from_secs(5),
         }
     }

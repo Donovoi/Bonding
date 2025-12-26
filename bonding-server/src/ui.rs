@@ -149,7 +149,13 @@ fn ui_loop(
             let cfg_text = Text::from(vec![
                 Line::from(format!("Config: {}", config_path.display())),
                 Line::from(format!("Bind: {}:{}", cfg.listen_addr, cfg.listen_port)),
+                Line::from(format!("TUN forwarding: {}", cfg.enable_tun)),
+                Line::from(format!("TUN device: {} | MTU: {}", cfg.tun_device_name, cfg.tun_mtu)),
                 Line::from(format!("Encryption: {}", cfg.enable_encryption)),
+                Line::from(format!(
+                    "Encryption key configured: {}",
+                    cfg.encryption_key_b64.as_ref().map(|s| !s.is_empty()).unwrap_or(false)
+                )),
                 Line::from(format!("Health interval: {:?}", cfg.health_interval)),
             ]);
 

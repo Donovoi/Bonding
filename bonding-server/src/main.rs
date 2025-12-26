@@ -1,12 +1,28 @@
 use anyhow::Result;
+use base64::Engine;
+use bonding_core::transport::PacketCrypto;
 
 mod cli;
 mod config;
 mod runtime;
 mod ui;
 
+#[cfg(target_os = "linux")]
+mod linux_tun_config;
+
+#[cfg(target_os = "linux")]
+mod linux_nat_config;
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        // Attempt to elevate early (keeps behavior consistent with the client on Windows).
+        if bonding_core::windows_admin::relaunch_as_admin_if_needed()? {
+            return Ok(());
+        }
+    }
+
     tracing_subscriber::fmt::init();
 
     let cli = <cli::Cli as clap::Parser>::parse();
@@ -21,7 +37,12 @@ async fn main() -> Result<()> {
             Ok(())
         }
         cli::Command::InitConfig { force } => {
-            let cfg = bonding_core::control::ServerConfig::default();
+            let mut cfg = bonding_core::control::ServerConfig::default();
+            if cfg.enable_encryption {
+                let key = PacketCrypto::generate_key();
+                cfg.encryption_key_b64 =
+                    Some(base64::engine::general_purpose::STANDARD.encode(key));
+            }
             config::save(&config_path, &cfg, force)?;
             println!("Wrote default config to {}", config_path.display());
             Ok(())

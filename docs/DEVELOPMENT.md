@@ -22,6 +22,8 @@ This guide helps you get started with Bonding development.
 - TUN/TAP kernel module (`modprobe tun`)
 - Root privileges (for testing)
 
+If you are testing full-tunnel or Tailscale coexistence (server-side NAT/forwarding), you'll also need `iptables` available (or a compatible wrapper).
+
 ## Getting Started
 
 1. Clone the repository:
@@ -70,6 +72,8 @@ Bonding/
 │   └── Cargo.toml
 ├── bonding-server/        # Linux server
 │   ├── src/main.rs
+│   ├── src/linux_tun_config.rs  # Linux: IP/route setup for TUN
+│   ├── src/linux_nat_config.rs  # Linux: forwarding/NAT (MASQUERADE) helpers
 │   └── Cargo.toml
 ├── resources/             # Embedded binary resources
 │   ├── README.md          # Resource documentation
@@ -326,6 +330,15 @@ cargo doc --no-deps --open
 ```
 
 This builds and opens the documentation in your browser.
+
+## Full-tunnel + Tailscale (Linux server)
+
+If the server runs Tailscale and you want tunnel clients to access the tailnet while doing full tunnel, configure the server to NAT/MASQUERADE the tunnel subnet out via `tailscale0`.
+
+Relevant server config keys (see `bonding-core/src/control.rs`):
+- `enable_tun`, `auto_config_tun`, `tun_ipv4_addr`, `tun_ipv4_prefix`, `tun_routes`
+- `enable_ipv4_forwarding`
+- `nat_masquerade_out_ifaces = ["tailscale0"]`
 
 ## Performance Tips
 

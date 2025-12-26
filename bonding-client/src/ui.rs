@@ -156,9 +156,17 @@ fn ui_loop(
                 Line::from(format!("Server: {}:{}", cfg.server_addr, cfg.server_port)),
                 Line::from(format!("Mode: {}", cfg.bonding_mode)),
                 Line::from(format!("MTU: {}", cfg.mtu)),
+                Line::from(format!("TUN forwarding: {}", cfg.enable_tun)),
                 Line::from(format!(
                     "Encryption: {} | Health interval: {:?}",
                     cfg.enable_encryption, cfg.health_check_interval
+                )),
+                Line::from(format!(
+                    "Encryption key configured: {}",
+                    cfg.encryption_key_b64
+                        .as_ref()
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false)
                 )),
             ]);
 
