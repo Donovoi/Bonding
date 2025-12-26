@@ -13,6 +13,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   WINTUN_VERSION: "0.14.1"
+  WINTUN_SHA256: "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
 
 permissions:
   contents: write
@@ -33,14 +34,26 @@ jobs:
       - name: Check if version changed
         id: version_check
         run: |
-          # Get current workspace version from Cargo.toml
-          CURRENT_VERSION=$(awk '/^\[workspace\.package\]/{flag=1; next} /^\[/{flag=0} flag && /^version/{gsub(/[" ]/, "", $3); print $3}' Cargo.toml)
+          # Extract current workspace version from Cargo.toml
+          # Looks for version line in [workspace.package] section only
+          CURRENT_VERSION=$(awk '
+            /^\[workspace\.package\]/ { in_section=1; next }
+            /^\[/ { in_section=0 }
+            in_section && /^version/ { gsub(/[" ]/, "", $3); print $3; exit }
+          ' Cargo.toml)
           echo "Current version: $CURRENT_VERSION"
 
-          # Check if workspace version changed in the last commit
-          # Extract the workspace.package section from the diff
-          if git diff HEAD~1 HEAD -- Cargo.toml | awk '/^\+\+\+ /{next} /^@@/{in_diff=1} in_diff && /\[workspace\.package\]/{in_section=1} in_diff && in_section && /^\[/ && !/\[workspace\.package\]/{in_section=0} in_section && /^\+version = /{found=1; exit} END{exit !found}'; then
+          # Check if workspace version changed in last commit
+          # Gets old and new versions from the workspace.package section
+          OLD_VERSION=$(git show HEAD~1:Cargo.toml | awk '
+            /^\[workspace\.package\]/ { in_section=1; next }
+            /^\[/ { in_section=0 }
+            in_section && /^version/ { gsub(/[" ]/, "", $3); print $3; exit }
+          ')
+
+          if [ "$OLD_VERSION" != "$CURRENT_VERSION" ]; then
             VERSION_CHANGED=true
+            echo "Version changed: $OLD_VERSION → $CURRENT_VERSION"
           else
             VERSION_CHANGED=false
           fi
@@ -129,8 +142,7 @@ jobs:
           $wintunVersion = "${{ env.WINTUN_VERSION }}"
           $wintunUrl = "https://www.wintun.net/builds/wintun-$wintunVersion.zip"
           $wintunZip = "wintun.zip"
-          # SHA256 checksum for Wintun 0.14.1 (verify at https://www.wintun.net/)
-          $expectedHash = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
+          $expectedHash = "${{ env.WINTUN_SHA256 }}"
 
           Write-Host "Downloading Wintun $wintunVersion..."
           Invoke-WebRequest -Uri $wintunUrl -OutFile $wintunZip

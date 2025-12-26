@@ -273,7 +273,8 @@ The workflows use minimal required permissions:
   - Downloaded from official source (wintun.net)
   - SHA256 checksum verified before use
   - Prevents tampering during download
-  - Checksum must be updated when Wintun version changes
+  - **Important:** When updating `WINTUN_VERSION`, also update `WINTUN_SHA256` in the workflow's env section
+  - Both values are defined at the top of `auto-release.yml` for easy maintenance
 
 ## Future Improvements
 
