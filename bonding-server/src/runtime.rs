@@ -532,7 +532,7 @@ async fn run_server_tun_mode(
     }
 
     let mut udp_buf = [0u8; UDP_RECV_BUF_SIZE];
-    let mut tun_buf = vec![0u8; cfg.tun_mtu.max(1500).min(65535)];
+    let mut tun_buf = vec![0u8; cfg.tun_mtu.clamp(1500, 65535)];
 
     let mut received: u64 = 0;
     let mut tx_seq: u64 = 1;
