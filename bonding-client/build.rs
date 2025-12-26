@@ -38,13 +38,19 @@ fn main() {
 
     if wintun_path.exists() {
         // Generate code that includes the DLL bytes
+        // Use to_str() to safely convert the path and escape backslashes for Windows paths
+        let path_str = wintun_path
+            .to_str()
+            .expect("Path contains invalid UTF-8")
+            .replace('\\', "\\\\");
+
         writeln!(
             file,
             r#"
 /// Embedded wintun DLL bytes (compiled into binary)
 pub const EMBEDDED_WINTUN_DLL: Option<&[u8]> = Some(include_bytes!(r"{}"));
 "#,
-            wintun_path.display()
+            path_str
         )
         .expect("Failed to write generated code");
 
