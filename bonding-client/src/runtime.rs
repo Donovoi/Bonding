@@ -1,13 +1,14 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use bonding_core::control::BondingConfig;
-use bonding_core::proto::{Packet, PacketFlags};
+use bonding_core::proto::Packet;
+#[cfg(target_os = "windows")]
+use bonding_core::proto::PacketFlags;
 use bonding_core::transport::{EncryptionKey, PacketCrypto};
 use std::net::SocketAddr;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
