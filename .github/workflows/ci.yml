@@ -9,6 +9,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test Suite
@@ -89,6 +92,37 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      
+      - name: Download and prepare Wintun DLL (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Download Wintun
+          $wintunVersion = "0.14.1"
+          $wintunUrl = "https://www.wintun.net/builds/wintun-$wintunVersion.zip"
+          $wintunZip = "wintun.zip"
+          
+          Write-Host "Downloading Wintun $wintunVersion..."
+          Invoke-WebRequest -Uri $wintunUrl -OutFile $wintunZip
+          
+          # Extract and organize DLLs
+          Write-Host "Extracting Wintun..."
+          Expand-Archive -Path $wintunZip -DestinationPath wintun-temp
+          
+          # Create resources directory
+          New-Item -ItemType Directory -Force -Path resources
+          
+          # Copy and rename DLLs for each architecture
+          Copy-Item "wintun-temp/wintun/bin/amd64/wintun.dll" "resources/wintun_amd64.dll"
+          Copy-Item "wintun-temp/wintun/bin/x86/wintun.dll" "resources/wintun_x86.dll"
+          Copy-Item "wintun-temp/wintun/bin/arm64/wintun.dll" "resources/wintun_arm64.dll"
+          Copy-Item "wintun-temp/wintun/bin/arm/wintun.dll" "resources/wintun_arm.dll"
+          
+          Write-Host "Wintun DLLs prepared in resources directory"
+          
+          # Clean up
+          Remove-Item -Recurse -Force wintun-temp
+          Remove-Item $wintunZip
       
       - name: Build
         run: cargo build --release --verbose
