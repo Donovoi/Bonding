@@ -66,7 +66,11 @@ fi
 CURRENT_VERSION=$(awk '
   /^\[workspace\.package\]/ { in_section=1; next }
   /^\[/ { in_section=0 }
-  in_section && /^version/ { gsub(/"/, "", $3); print $3; exit }
+  in_section && /^[[:space:]]*version[[:space:]]*=/ { 
+    gsub(/["[:space:]]/, "", $NF); 
+    print $NF; 
+    exit 
+  }
 ' Cargo.toml)
 
 echo "Current version in Cargo.toml: $CURRENT_VERSION"
