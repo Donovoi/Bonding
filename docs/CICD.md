@@ -242,6 +242,12 @@ Follow [Semantic Versioning](https://semver.org/):
 **Wintun Download Fails (Windows)**
 - Solution: Check if wintun.net is accessible
 - Verify URL is correct in workflow file
+- The workflow includes SHA256 checksum verification for security
+
+**"Checksum verification failed"**
+- Solution: The downloaded Wintun archive doesn't match the expected checksum
+- Update the `expectedHash` in the workflow if Wintun version was updated
+- This is a security feature to prevent tampered downloads
 
 ## Security Considerations
 
@@ -263,6 +269,11 @@ The workflows use minimal required permissions:
 - Build artifacts are publicly accessible
 - Don't include sensitive data in binaries
 - Review dependencies for vulnerabilities
+- **Wintun DLL Security:**
+  - Downloaded from official source (wintun.net)
+  - SHA256 checksum verified before use
+  - Prevents tampering during download
+  - Checksum must be updated when Wintun version changes
 
 ## Future Improvements
 
