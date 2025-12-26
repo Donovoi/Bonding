@@ -146,6 +146,7 @@ jobs:
           name: bonding-windows
           path: |
             target/release/bonding-client.exe
+            target/release/bonding-server.exe
       
       - name: Upload artifacts (Linux)
         if: matrix.os == 'ubuntu-latest'
@@ -153,4 +154,5 @@ jobs:
         with:
           name: bonding-linux
           path: |
+            target/release/bonding-client
             target/release/bonding-server

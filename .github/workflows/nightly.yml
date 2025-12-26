@@ -1,0 +1,193 @@
+name: Nightly Build
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - "LICENSE-*"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  WINTUN_VERSION: "0.14.1"
+  WINTUN_SHA256: "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os_name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            os_name: windows
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            os_name: linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Download and prepare Wintun DLL (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Download Wintun
+          $wintunVersion = "${{ env.WINTUN_VERSION }}"
+          $wintunUrl = "https://www.wintun.net/builds/wintun-$wintunVersion.zip"
+          $wintunZip = "wintun.zip"
+          $expectedHash = "${{ env.WINTUN_SHA256 }}"
+
+          Write-Host "Downloading Wintun $wintunVersion..."
+          Invoke-WebRequest -Uri $wintunUrl -OutFile $wintunZip
+
+          # Verify checksum for security
+          Write-Host "Verifying checksum..."
+          $actualHash = (Get-FileHash -Path $wintunZip -Algorithm SHA256).Hash.ToLower()
+          if ($actualHash -ne $expectedHash) {
+            Write-Error "Checksum verification failed! Expected: $expectedHash, Got: $actualHash"
+            exit 1
+          }
+          Write-Host "✓ Checksum verified successfully"
+
+          # Extract and organize DLLs
+          Write-Host "Extracting Wintun..."
+          Expand-Archive -Path $wintunZip -DestinationPath wintun-temp
+
+          # Create resources directory
+          New-Item -ItemType Directory -Force -Path resources
+
+          # Copy and rename DLLs for each architecture
+          Copy-Item "wintun-temp/wintun/bin/amd64/wintun.dll" "resources/wintun_amd64.dll"
+          Copy-Item "wintun-temp/wintun/bin/x86/wintun.dll" "resources/wintun_x86.dll"
+          Copy-Item "wintun-temp/wintun/bin/arm64/wintun.dll" "resources/wintun_arm64.dll"
+          Copy-Item "wintun-temp/wintun/bin/arm/wintun.dll" "resources/wintun_arm.dll"
+
+          Write-Host "Wintun DLLs prepared in resources directory"
+
+          # Clean up
+          Remove-Item -Recurse -Force wintun-temp
+          Remove-Item $wintunZip
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p bonding-client -p bonding-server --verbose
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.target }}"
+
+          $packages = @(
+            @{ Name = "bonding-client"; Binary = "bonding-client.exe"; Archive = "bonding-client-windows-$target.zip" },
+            @{ Name = "bonding-server"; Binary = "bonding-server.exe"; Archive = "bonding-server-windows-$target.zip" }
+          )
+
+          foreach ($p in $packages) {
+            if (Test-Path "package") { Remove-Item -Recurse -Force "package" }
+            New-Item -ItemType Directory -Force -Path package | Out-Null
+
+            $binPath = "target/$target/release/$($p.Binary)"
+            if (-not (Test-Path $binPath)) {
+              Write-Error "Expected binary not found: $binPath"
+              exit 1
+            }
+            Copy-Item $binPath package/
+
+            if (Test-Path "README.md") { Copy-Item "README.md" package/ }
+            if (Test-Path "LICENSE-MIT") { Copy-Item "LICENSE-MIT" package/ }
+            if (Test-Path "LICENSE-APACHE") { Copy-Item "LICENSE-APACHE" package/ }
+
+            if (Test-Path $p.Archive) { Remove-Item -Force $p.Archive }
+            Compress-Archive -Path package/* -DestinationPath $p.Archive
+            Write-Host "Created archive: $($p.Archive)"
+          }
+
+      - name: Package (Linux)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          target="${{ matrix.target }}"
+
+          for bin in bonding-client bonding-server; do
+            archive_name="${bin}-linux-${target}.tar.gz"
+
+            rm -rf package
+            mkdir -p package
+
+            if [ ! -f "target/${target}/release/${bin}" ]; then
+              echo "Expected binary not found: target/${target}/release/${bin}" >&2
+              exit 1
+            fi
+            cp "target/${target}/release/${bin}" package/
+
+            [ -f README.md ] && cp README.md package/
+            [ -f LICENSE-MIT ] && cp LICENSE-MIT package/
+            [ -f LICENSE-APACHE ] && cp LICENSE-APACHE package/
+
+            tar -czf "${archive_name}" -C package .
+            echo "Created archive: ${archive_name}"
+          done
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-${{ matrix.os_name }}-${{ matrix.target }}
+          path: |
+            ./bonding-client-${{ matrix.os_name }}-${{ matrix.target }}.*
+            ./bonding-server-${{ matrix.os_name }}-${{ matrix.target }}.*
+
+  release:
+    name: Publish Nightly Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Update nightly tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -f nightly "${GITHUB_SHA}"
+          git push -f origin nightly
+
+      - name: Create or update prerelease
+        uses: ncipollo/release-action@v1
+        with:
+          tag: nightly
+          name: Nightly
+          prerelease: true
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: "artifacts/**/*"
+          body: |
+            ## Nightly build
+
+            This prerelease is updated automatically on every push to `main`.
+
+            Commit: `${{ github.sha }}`
