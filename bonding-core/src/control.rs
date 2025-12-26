@@ -27,6 +27,7 @@ pub struct BondingConfig {
     /// Enable encryption
     pub enable_encryption: bool,
     /// Health check interval
+    #[serde(with = "humantime_serde")]
     pub health_check_interval: Duration,
 }
 
@@ -40,6 +41,31 @@ impl Default for BondingConfig {
             mtu: 1420,
             enable_encryption: true,
             health_check_interval: Duration::from_secs(5),
+        }
+    }
+}
+
+/// Configuration for the bonding server
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    /// Address to bind the UDP socket to
+    pub listen_addr: String,
+    /// Port to bind the UDP socket to
+    pub listen_port: u16,
+    /// Enable encryption (future)
+    pub enable_encryption: bool,
+    /// Health/logging interval
+    #[serde(with = "humantime_serde")]
+    pub health_interval: Duration,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            listen_addr: "0.0.0.0".to_string(),
+            listen_port: 5000,
+            enable_encryption: true,
+            health_interval: Duration::from_secs(5),
         }
     }
 }
