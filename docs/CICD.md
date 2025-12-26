@@ -138,6 +138,26 @@ This workflow automates the release process when a PR with a version bump is mer
 
 ### For Maintainers
 
+**Creating the First Release:**
+
+Use the provided script to create the first release (v0.1.0):
+
+```bash
+# Linux/macOS
+./scripts/create-first-release.sh
+
+# Windows PowerShell
+.\scripts\create-first-release.ps1
+```
+
+Or manually:
+```bash
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+See [RELEASE.md](RELEASE.md) for complete details on the release process.
+
 **Automated Release (Recommended):**
 - Merge PRs with version bumps
 - Pipeline handles everything automatically
