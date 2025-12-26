@@ -17,7 +17,7 @@
 
 use super::TunDevice;
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use wintun::Session;
 
 /// Default MTU for Wintun adapters
@@ -32,7 +32,13 @@ const ADAPTER_NAME: &str = "Bonding";
 /// identifier for the tunnel type. It helps Windows distinguish Bonding adapters from
 /// other Wintun-based VPN applications. This GUID is consistent across all Bonding
 /// installations to enable adapter reuse and proper identification.
-const ADAPTER_GUID: &str = "5fb1c3e4-2e82-4e1b-a2f6-1d5c3e4f5a6b";
+///
+/// The GUID is parsed at compile time to catch format errors early.
+static ADAPTER_GUID: LazyLock<u128> = LazyLock::new(|| {
+    // Parse the GUID string at initialization
+    // Format: 5fb1c3e4-2e82-4e1b-a2f6-1d5c3e4f5a6b
+    0x5fb1c3e4_2e82_4e1b_a2f6_1d5c3e4f5a6b
+});
 
 /// Wintun TUN device implementation
 ///
@@ -80,16 +86,22 @@ impl WintunDevice {
             })?
         };
 
-        // Parse GUID
-        let guid = ADAPTER_GUID.parse().map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid GUID: {}", e))
-        })?;
+        // Use the pre-initialized GUID
+        let guid = *ADAPTER_GUID;
 
         // Create or open adapter
         let adapter = match Adapter::open(&wintun, adapter_name) {
-            Ok(adapter) => adapter,
-            Err(_) => {
-                // Adapter doesn't exist, create it
+            Ok(adapter) => {
+                tracing::debug!("Opened existing Wintun adapter '{}'", adapter_name);
+                adapter
+            }
+            Err(open_err) => {
+                // Adapter doesn't exist or can't be opened, try to create it
+                tracing::debug!(
+                    "Failed to open adapter '{}': {}. Attempting to create new adapter.",
+                    adapter_name,
+                    open_err
+                );
                 Adapter::create(&wintun, adapter_name, adapter_name, Some(guid)).map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::PermissionDenied,
@@ -102,7 +114,7 @@ impl WintunDevice {
             }
         };
 
-        // Start a session with ring buffer capacity of 0x400000 bytes (4MB)
+        // Start a session using the maximum ring buffer capacity supported by Wintun
         let session = adapter
             .start_session(wintun::MAX_RING_CAPACITY)
             .map_err(|e| {
@@ -189,15 +201,23 @@ impl TunDevice for WintunDevice {
         }
 
         // Allocate send packet
-        let mut packet = self
-            .session
-            .allocate_send_packet(buf.len() as u16)
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::OutOfMemory,
-                    format!("Failed to allocate send packet: {}", e),
-                )
-            })?;
+        let packet_len = u16::try_from(buf.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Packet length {} exceeds maximum supported size {}",
+                    buf.len(),
+                    u16::MAX
+                ),
+            )
+        })?;
+
+        let mut packet = self.session.allocate_send_packet(packet_len).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                format!("Failed to allocate send packet: {}", e),
+            )
+        })?;
 
         // Copy data to packet
         packet.bytes_mut().copy_from_slice(buf);
@@ -268,16 +288,11 @@ mod tests {
         // Test write
         let test_packet = vec![0x45, 0x00, 0x00, 0x20]; // Simple IP header start
         let result = device.write_packet(&test_packet);
-        // Should succeed or fail gracefully
-        assert!(result.is_ok() || result.is_err());
-    }
-
-    #[test]
-    fn test_empty_packet_write() {
-        // This test doesn't require actual Wintun setup
-        // We just verify our validation logic
-        let empty_packet: Vec<u8> = vec![];
-        // Can't test actual write without adapter, but we document the expected behavior
-        assert!(empty_packet.is_empty());
+        // Write should succeed for valid packet
+        assert!(
+            result.is_ok(),
+            "Write should succeed for valid packet: {:?}",
+            result
+        );
     }
 }

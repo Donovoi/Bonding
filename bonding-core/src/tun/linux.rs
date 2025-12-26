@@ -87,17 +87,9 @@ impl LinuxTunDevice {
         // Create the TUN device
         let device = DeviceBuilder::new()
             .name(device_name)
-            .mtu(DEFAULT_MTU as u16)
+            .mtu(u16::try_from(DEFAULT_MTU).expect("MTU must fit in u16"))
             .build_async()
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!(
-                        "Failed to create TUN device (root privileges required): {}",
-                        e
-                    ),
-                )
-            })?;
+            .map_err(|e| io::Error::other(format!("Failed to create TUN device: {}", e)))?;
 
         let actual_name = device
             .name()
@@ -222,12 +214,5 @@ mod tests {
 
         // Verify we can get the async device handle
         let _device_handle = device.device_handle();
-    }
-
-    #[test]
-    fn test_empty_packet_validation() {
-        // Test our validation logic without needing root
-        let empty_packet: Vec<u8> = vec![];
-        assert!(empty_packet.is_empty());
     }
 }
