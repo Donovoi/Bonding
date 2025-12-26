@@ -11,7 +11,7 @@ fn main() {
 
     // Get the architecture
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    
+
     // Determine wintun.dll path based on architecture
     let wintun_dll_name = match arch.as_str() {
         "x86_64" => "wintun_amd64.dll",
@@ -33,9 +33,9 @@ fn main() {
     // Generate code to embed the DLL if it exists
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let gen_file = out_dir.join("embedded_wintun.rs");
-    
+
     let mut file = fs::File::create(&gen_file).expect("Failed to create generated file");
-    
+
     if wintun_path.exists() {
         // Generate code that includes the DLL bytes
         writeln!(
@@ -45,11 +45,13 @@ fn main() {
 pub const EMBEDDED_WINTUN_DLL: Option<&[u8]> = Some(include_bytes!(r"{}"));
 "#,
             wintun_path.display()
-        ).expect("Failed to write generated code");
-        
+        )
+        .expect("Failed to write generated code");
+
         println!("cargo:rerun-if-changed={}", wintun_path.display());
-        println!("cargo:warning=Wintun DLL will be embedded: {} ({} bytes)", 
-            wintun_dll_name, 
+        println!(
+            "cargo:warning=Wintun DLL will be embedded: {} ({} bytes)",
+            wintun_dll_name,
             fs::metadata(&wintun_path).unwrap().len()
         );
     } else {
@@ -60,11 +62,18 @@ pub const EMBEDDED_WINTUN_DLL: Option<&[u8]> = Some(include_bytes!(r"{}"));
 /// Embedded wintun DLL bytes (not available - will need to be provided at runtime)
 pub const EMBEDDED_WINTUN_DLL: Option<&[u8]> = None;
 "#
-        ).expect("Failed to write generated code");
-        
-        println!("cargo:warning=wintun.dll not found at {}.", wintun_path.display());
+        )
+        .expect("Failed to write generated code");
+
+        println!(
+            "cargo:warning=wintun.dll not found at {}.",
+            wintun_path.display()
+        );
         println!("cargo:warning=The binary will require wintun.dll at runtime.");
-        println!("cargo:warning=To embed wintun.dll, place {} in {} before building.", 
-            wintun_dll_name, resources_dir.display());
+        println!(
+            "cargo:warning=To embed wintun.dll, place {} in {} before building.",
+            wintun_dll_name,
+            resources_dir.display()
+        );
     }
 }
