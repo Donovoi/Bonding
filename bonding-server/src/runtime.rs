@@ -3,7 +3,7 @@ use base64::Engine;
 use bonding_core::control::ServerConfig;
 use bonding_core::proto::Packet;
 use bonding_core::transport::{EncryptionKey, PacketCrypto};
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
@@ -30,6 +30,32 @@ fn decode_key_b64(s: &str) -> Result<EncryptionKey> {
     let mut key = [0u8; 32];
     key.copy_from_slice(&raw);
     Ok(key)
+}
+
+fn ipv4_src_dst(packet: &[u8]) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    // Minimal IPv4 parser for routing: src/dst are always at fixed offsets.
+    // Returns None if the packet doesn't look like IPv4.
+    if packet.len() < 20 {
+        return None;
+    }
+
+    let ver = packet[0] >> 4;
+    if ver != 4 {
+        return None;
+    }
+
+    let ihl = packet[0] & 0x0f;
+    if ihl < 5 {
+        return None;
+    }
+
+    let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+    let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+    Some((src, dst))
+}
+
+fn ipv4_dst(packet: &[u8]) -> Option<Ipv4Addr> {
+    ipv4_src_dst(packet).map(|(_, dst)| dst)
 }
 
 pub async fn run_server(
@@ -167,13 +193,13 @@ async fn run_server_tun_mode_windows(
 ) -> Result<()> {
     use bonding_core::proto::PacketFlags;
     use bonding_core::tun::{TunDevice, WintunDevice};
+    use std::collections::HashMap;
     use std::io;
-    use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    };
+    use std::net::Ipv4Addr;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+    use tokio::sync::mpsc;
 
     let bind_addr: SocketAddr = format!("{}:{}", cfg.listen_addr, cfg.listen_port)
         .parse()
@@ -275,8 +301,10 @@ async fn run_server_tun_mode_windows(
         }
     }
 
-    // net -> tun (sync)
-    let (net_to_tun_tx, net_to_tun_rx) = mpsc::channel::<Vec<u8>>();
+    const NET_TO_TUN_QUEUE: usize = 1024;
+
+    // net -> tun (bounded; drop on overflow)
+    let (net_to_tun_tx, mut net_to_tun_rx) = mpsc::channel::<Vec<u8>>(NET_TO_TUN_QUEUE);
     // tun -> net (tokio)
     let (tun_to_net_tx, mut tun_to_net_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
 
@@ -298,8 +326,8 @@ async fn run_server_tun_mode_windows(
                             (log_thread.as_ref())(format!("TUN write error: {e}"));
                         }
                     }
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => return,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return,
                 }
             }
 
@@ -328,39 +356,85 @@ async fn run_server_tun_mode_windows(
     let mut last_peer: Option<SocketAddr> = None;
     let mut last_session_id: Option<u64> = None;
 
+    // Best-effort multi-client support:
+    // - Track active sessions by session_id -> (peer, last_seen)
+    // - Learn client tunnel IPv4 by observing IPv4 source addresses
+    //   from client->server packets, then route server->client packets
+    //   by IPv4 destination address.
+    let mut sessions: HashMap<u64, (SocketAddr, Instant)> = HashMap::new();
+    let mut vip_to_session: HashMap<Ipv4Addr, (u64, SocketAddr, Instant)> = HashMap::new();
+    let mut dropped_net_to_tun: u64 = 0;
+    let mut dropped_net_to_tun_last: u64 = 0;
+
+    const SESSION_TTL: Duration = Duration::from_secs(30);
+    const VIP_TTL: Duration = Duration::from_secs(60);
+
     let mut health_tick = tokio::time::interval(cfg.health_interval);
     let mut keepalive_tick = tokio::time::interval(Duration::from_secs(2));
 
     loop {
         tokio::select! {
             _ = health_tick.tick() => {
-                (log.as_ref())(format!("Health tick: received_packets={received} peer_known={}", last_peer.is_some()));
+                let now = Instant::now();
+
+                sessions.retain(|_, (_, last_seen)| now.duration_since(*last_seen) < SESSION_TTL);
+                vip_to_session.retain(|_, v| {
+                    let (sid, _peer, last_seen) = v;
+                    now.duration_since(*last_seen) < VIP_TTL && sessions.contains_key(sid)
+                });
+
+                let dropped_delta = dropped_net_to_tun.saturating_sub(dropped_net_to_tun_last);
+                dropped_net_to_tun_last = dropped_net_to_tun;
+
+                (log.as_ref())(format!(
+                    "Health tick: received_packets={received} peer_known={} sessions={} clients={} dropped_udp_to_tun={} (+{})",
+                    last_peer.is_some(),
+                    sessions.len(),
+                    vip_to_session.len(),
+                    dropped_net_to_tun,
+                    dropped_delta
+                ));
             }
 
             _ = keepalive_tick.tick() => {
-                let Some(peer) = last_peer else { continue; };
-                let Some(session_id) = last_session_id else { continue; };
+                let now = Instant::now();
+                let targets: Vec<(u64, SocketAddr)> = sessions
+                    .iter()
+                    .filter_map(|(sid, (peer, last_seen))| {
+                        if now.duration_since(*last_seen) < SESSION_TTL {
+                            Some((*sid, *peer))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if targets.is_empty() {
+                    continue;
+                }
 
                 let flags_raw: u8 = PacketFlags::ACK_ONLY;
-                let wire = if let Some(ref crypto) = crypto {
-                    crypto
-                        .seal_packet_with_flags(
-                            NONCE_DOMAIN_SERVER_TO_CLIENT,
-                            session_id,
-                            tx_seq,
-                            flags_raw,
-                            &[],
-                        )
-                        .context("failed to seal ACK_ONLY keepalive")?
-                        .encode()
-                } else {
-                    let mut pkt = Packet::new(session_id, tx_seq, Vec::new());
-                    pkt.header.flags = PacketFlags::from_raw(flags_raw);
-                    pkt.encode()
-                };
+                for (session_id, peer) in targets {
+                    let wire = if let Some(ref crypto) = crypto {
+                        crypto
+                            .seal_packet_with_flags(
+                                NONCE_DOMAIN_SERVER_TO_CLIENT,
+                                session_id,
+                                tx_seq,
+                                flags_raw,
+                                &[],
+                            )
+                            .context("failed to seal ACK_ONLY keepalive")?
+                            .encode()
+                    } else {
+                        let mut pkt = Packet::new(session_id, tx_seq, Vec::new());
+                        pkt.header.flags = PacketFlags::from_raw(flags_raw);
+                        pkt.encode()
+                    };
 
-                tx_seq = tx_seq.wrapping_add(1);
-                let _ = sock.send_to(&wire, peer).await;
+                    tx_seq = tx_seq.wrapping_add(1);
+                    let _ = sock.send_to(&wire, peer).await;
+                }
             }
 
             recv = sock.recv_from(&mut udp_buf) => {
@@ -387,6 +461,9 @@ async fn run_server_tun_mode_windows(
                     pkt.payload
                 };
 
+                let now = Instant::now();
+                sessions.insert(pkt.header.session_id, (peer, now));
+
                 last_peer = Some(peer);
                 last_session_id = Some(pkt.header.session_id);
 
@@ -394,7 +471,13 @@ async fn run_server_tun_mode_windows(
                     continue;
                 }
 
-                let _ = net_to_tun_tx.send(payload);
+                if let Some((src, _dst)) = ipv4_src_dst(&payload) {
+                    vip_to_session.insert(src, (pkt.header.session_id, peer, now));
+                }
+
+                if let Err(_e) = net_to_tun_tx.try_send(payload) {
+                    dropped_net_to_tun = dropped_net_to_tun.wrapping_add(1);
+                }
             }
 
             maybe_pkt = tun_to_net_rx.recv() => {
@@ -402,8 +485,26 @@ async fn run_server_tun_mode_windows(
                     break;
                 };
 
-                let Some(peer) = last_peer else { continue; };
-                let Some(session_id) = last_session_id else { continue; };
+                let mut target: Option<(SocketAddr, u64)> = None;
+                if let Some(dst) = ipv4_dst(&ip_packet) {
+                    if let Some((sid, peer, _last_seen)) = vip_to_session.get(&dst) {
+                        target = Some((*peer, *sid));
+                    }
+                }
+
+                // Preserve single-client behavior until we learn at least one client VIP.
+                if target.is_none() {
+                    if vip_to_session.is_empty() {
+                        if let (Some(peer), Some(session_id)) = (last_peer, last_session_id) {
+                            target = Some((peer, session_id));
+                        }
+                    } else {
+                        // Multi-client mode: don't guess.
+                        continue;
+                    }
+                }
+
+                let Some((peer, session_id)) = target else { continue; };
 
                 let wire = if let Some(ref crypto) = crypto {
                     crypto
@@ -452,6 +553,9 @@ async fn run_server_tun_mode(
     log: Arc<LogFn>,
 ) -> Result<()> {
     use bonding_core::proto::PacketFlags;
+    use std::collections::HashMap;
+    use std::net::Ipv4Addr;
+    use std::time::{Duration, Instant};
     use tun_rs::DeviceBuilder;
 
     let bind_addr: SocketAddr = format!("{}:{}", cfg.listen_addr, cfg.listen_port)
@@ -540,39 +644,73 @@ async fn run_server_tun_mode(
     let mut last_peer: Option<SocketAddr> = None;
     let mut last_session_id: Option<u64> = None;
 
+    let mut sessions: HashMap<u64, (SocketAddr, Instant)> = HashMap::new();
+    let mut vip_to_session: HashMap<Ipv4Addr, (u64, SocketAddr, Instant)> = HashMap::new();
+
+    const SESSION_TTL: Duration = Duration::from_secs(30);
+    const VIP_TTL: Duration = Duration::from_secs(60);
+
     let mut health_tick = tokio::time::interval(cfg.health_interval);
     let mut keepalive_tick = tokio::time::interval(std::time::Duration::from_secs(2));
 
     loop {
         tokio::select! {
             _ = health_tick.tick() => {
-                (log.as_ref())(format!("Health tick: received_packets={received} peer_known={}", last_peer.is_some()));
+                let now = Instant::now();
+
+                sessions.retain(|_, (_, last_seen)| now.duration_since(*last_seen) < SESSION_TTL);
+                vip_to_session.retain(|_, v| {
+                    let (sid, _peer, last_seen) = v;
+                    now.duration_since(*last_seen) < VIP_TTL && sessions.contains_key(sid)
+                });
+
+                (log.as_ref())(format!(
+                    "Health tick: received_packets={received} peer_known={} sessions={} clients={}",
+                    last_peer.is_some(),
+                    sessions.len(),
+                    vip_to_session.len()
+                ));
             }
 
             _ = keepalive_tick.tick() => {
-                let Some(peer) = last_peer else { continue; };
-                let Some(session_id) = last_session_id else { continue; };
+                let now = Instant::now();
+                let targets: Vec<(u64, SocketAddr)> = sessions
+                    .iter()
+                    .filter_map(|(sid, (peer, last_seen))| {
+                        if now.duration_since(*last_seen) < SESSION_TTL {
+                            Some((*sid, *peer))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if targets.is_empty() {
+                    continue;
+                }
 
                 let flags_raw = PacketFlags::ACK_ONLY;
-                let wire = if let Some(ref crypto) = crypto {
-                    crypto
-                        .seal_packet_with_flags(
-                            NONCE_DOMAIN_SERVER_TO_CLIENT,
-                            session_id,
-                            tx_seq,
-                            flags_raw,
-                            &[],
-                        )
-                        .context("failed to seal ACK_ONLY keepalive")?
-                        .encode()
-                } else {
-                    let mut pkt = Packet::new(session_id, tx_seq, Vec::new());
-                    pkt.header.flags = PacketFlags::from_raw(flags_raw);
-                    pkt.encode()
-                };
+                for (session_id, peer) in targets {
+                    let wire = if let Some(ref crypto) = crypto {
+                        crypto
+                            .seal_packet_with_flags(
+                                NONCE_DOMAIN_SERVER_TO_CLIENT,
+                                session_id,
+                                tx_seq,
+                                flags_raw,
+                                &[],
+                            )
+                            .context("failed to seal ACK_ONLY keepalive")?
+                            .encode()
+                    } else {
+                        let mut pkt = Packet::new(session_id, tx_seq, Vec::new());
+                        pkt.header.flags = PacketFlags::from_raw(flags_raw);
+                        pkt.encode()
+                    };
 
-                tx_seq = tx_seq.wrapping_add(1);
-                let _ = sock.send_to(&wire, peer).await;
+                    tx_seq = tx_seq.wrapping_add(1);
+                    let _ = sock.send_to(&wire, peer).await;
+                }
             }
 
             recv = sock.recv_from(&mut udp_buf) => {
@@ -599,11 +737,18 @@ async fn run_server_tun_mode(
                     pkt.payload
                 };
 
+                let now = Instant::now();
+                sessions.insert(pkt.header.session_id, (peer, now));
+
                 last_peer = Some(peer);
                 last_session_id = Some(pkt.header.session_id);
 
                 if pkt.header.flags.is_set(PacketFlags::ACK_ONLY) || payload.is_empty() {
                     continue;
+                }
+
+                if let Some((src, _dst)) = ipv4_src_dst(&payload) {
+                    vip_to_session.insert(src, (pkt.header.session_id, peer, now));
                 }
 
                 dev.send(&payload).await.context("failed to write packet to TUN")?;
@@ -615,10 +760,27 @@ async fn run_server_tun_mode(
                     continue;
                 }
 
-                let Some(peer) = last_peer else { continue; };
-                let Some(session_id) = last_session_id else { continue; };
-
                 let plaintext = &tun_buf[..n];
+
+                let mut target: Option<(SocketAddr, u64)> = None;
+                if let Some(dst) = ipv4_dst(plaintext) {
+                    if let Some((sid, peer, _last_seen)) = vip_to_session.get(&dst) {
+                        target = Some((*peer, *sid));
+                    }
+                }
+
+                if target.is_none() {
+                    if vip_to_session.is_empty() {
+                        if let (Some(peer), Some(session_id)) = (last_peer, last_session_id) {
+                            target = Some((peer, session_id));
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+
+                let Some((peer, session_id)) = target else { continue; };
+
                 let wire = if let Some(ref crypto) = crypto {
                     crypto
                         .seal_packet(
