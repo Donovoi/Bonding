@@ -5,11 +5,16 @@
 #
 # Usage: .\scripts\create-first-release.ps1
 
+param(
+    [string]$Version = 'v0.1.0',
+    [switch]$Yes
+)
+
 $ErrorActionPreference = 'Stop'
 
-$VERSION = 'v0.1.0'
-$TAG_MESSAGE = @'
-Release v0.1.0 - First release
+$VERSION = $Version
+$TAG_MESSAGE = @"
+Release $VERSION - First release
 
 This is the first release of Bonding, a Windows-first bonding overlay that aggregates multiple network connections.
 
@@ -22,7 +27,7 @@ Features:
 - Automated release pipeline
 
 See README.md for installation and usage instructions.
-'@
+"@
 
 Write-Host '=========================================' -ForegroundColor Cyan
 Write-Host 'Creating First Release for Bonding' -ForegroundColor Cyan
@@ -40,7 +45,7 @@ if (-not (Test-Path 'Cargo.toml')) {
 $localTagExists = ($LASTEXITCODE -eq 0)
 
 $remoteTagInfo = & git ls-remote --tags origin "refs/tags/$VERSION" 2>$null
-$remoteTagExists = (($LASTEXITCODE -eq 0) -and ($null -ne $remoteTagInfo) -and ($remoteTagInfo.Trim().Length -gt 0))
+$remoteTagExists = (($LASTEXITCODE -eq 0) -and ($null -ne $remoteTagInfo) -and $remoteTagInfo)
 
 if ($localTagExists -or $remoteTagExists) {
     if ($localTagExists) {
@@ -66,10 +71,12 @@ if ($gitStatus) {
     Write-Host 'Warning: You have uncommitted changes:' -ForegroundColor Yellow
     git status --short
     Write-Host ''
-    $continue = Read-Host 'Continue anyway? (y/N)'
-    if ($continue -ne 'y' -and $continue -ne 'Y') {
-        Write-Host 'Aborted.'
-        exit 1
+    if (-not $Yes) {
+        $continue = Read-Host 'Continue anyway? (y/N)'
+        if ($continue -ne 'y' -and $continue -ne 'Y') {
+            Write-Host 'Aborted.'
+            exit 1
+        }
     }
 }
 
@@ -89,10 +96,12 @@ Write-Host "Creating release tag: $VERSION"
 Write-Host ''
 
 # Confirm with user
-$confirm = Read-Host "Create and push tag $VERSION? (y/N)"
-if ($confirm -ne 'y' -and $confirm -ne 'Y') {
-    Write-Host 'Aborted.'
-    exit 1
+if (-not $Yes) {
+    $confirm = Read-Host "Create and push tag $VERSION? (y/N)"
+    if ($confirm -ne 'y' -and $confirm -ne 'Y') {
+        Write-Host 'Aborted.'
+        exit 1
+    }
 }
 
 Write-Host ''
