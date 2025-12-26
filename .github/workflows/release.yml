@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+  build-windows:
+    name: Build Windows
+    needs: create-release
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target: [x86_64-pc-windows-msvc]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      
+      - name: Download and prepare Wintun DLL
+        shell: pwsh
+        run: |
+          # Download Wintun
+          $wintunVersion = "0.14.1"
+          $wintunUrl = "https://www.wintun.net/builds/wintun-$wintunVersion.zip"
+          $wintunZip = "wintun.zip"
+          
+          Write-Host "Downloading Wintun $wintunVersion..."
+          Invoke-WebRequest -Uri $wintunUrl -OutFile $wintunZip
+          
+          # Extract and organize DLLs
+          Write-Host "Extracting Wintun..."
+          Expand-Archive -Path $wintunZip -DestinationPath wintun-temp
+          
+          # Create resources directory
+          New-Item -ItemType Directory -Force -Path resources
+          
+          # Copy and rename DLLs for each architecture
+          Copy-Item "wintun-temp/wintun/bin/amd64/wintun.dll" "resources/wintun_amd64.dll"
+          Copy-Item "wintun-temp/wintun/bin/x86/wintun.dll" "resources/wintun_x86.dll"
+          Copy-Item "wintun-temp/wintun/bin/arm64/wintun.dll" "resources/wintun_arm64.dll"
+          Copy-Item "wintun-temp/wintun/bin/arm/wintun.dll" "resources/wintun_arm.dll"
+          
+          Write-Host "Wintun DLLs prepared in resources directory"
+          Get-ChildItem resources
+          
+          # Clean up
+          Remove-Item -Recurse -Force wintun-temp
+          Remove-Item $wintunZip
+      
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --verbose
+      
+      - name: Package
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.target }}"
+          $archiveName = "bonding-windows-$target.zip"
+          
+          # Create package directory
+          New-Item -ItemType Directory -Force -Path package
+          
+          # Copy binary
+          Copy-Item "target/$target/release/bonding-client.exe" package/
+          
+          # Copy README and LICENSE files
+          if (Test-Path "README.md") { Copy-Item "README.md" package/ }
+          if (Test-Path "LICENSE-MIT") { Copy-Item "LICENSE-MIT" package/ }
+          if (Test-Path "LICENSE-APACHE") { Copy-Item "LICENSE-APACHE" package/ }
+          
+          # Create archive
+          Compress-Archive -Path package/* -DestinationPath $archiveName
+          
+          Write-Host "Created archive: $archiveName"
+      
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./bonding-windows-${{ matrix.target }}.zip
+          asset_name: bonding-windows-${{ matrix.target }}.zip
+          asset_content_type: application/zip
+
+  build-linux:
+    name: Build Linux
+    needs: create-release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --verbose
+      
+      - name: Package
+        run: |
+          target="${{ matrix.target }}"
+          archive_name="bonding-linux-${target}.tar.gz"
+          
+          # Create package directory
+          mkdir -p package
+          
+          # Copy binary
+          cp "target/${target}/release/bonding-server" package/
+          
+          # Copy README and LICENSE files
+          [ -f README.md ] && cp README.md package/
+          [ -f LICENSE-MIT ] && cp LICENSE-MIT package/
+          [ -f LICENSE-APACHE ] && cp LICENSE-APACHE package/
+          
+          # Create archive
+          tar -czf "${archive_name}" -C package .
+          
+          echo "Created archive: ${archive_name}"
+      
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./bonding-linux-${{ matrix.target }}.tar.gz
+          asset_name: bonding-linux-${{ matrix.target }}.tar.gz
+          asset_content_type: application/gzip
