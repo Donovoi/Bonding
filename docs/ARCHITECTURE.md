@@ -60,7 +60,7 @@ This document describes the detailed architecture of the Bonding overlay network
 │                                   │                          │
 │                          ┌────────▼────────┐                │
 │                          │   NAT/Forward   │                │
-│                          │   (iptables)    │                │
+│                          │ (iptables/nft)  │                │
 │                          └────────┬────────┘                │
 │                                   │                          │
 │                      SERVER (Linux)                          │
@@ -91,7 +91,9 @@ This document describes the detailed architecture of the Bonding overlay network
    - Reorders out-of-order packets
 8. Protocol layer decrypts and validates
 9. TUN device injects packet into kernel
-10. NAT forwards packet to public internet
+10. Optional forwarding/NAT routes packet to:
+  - the public internet (e.g. via `eth0`)
+  - the server's tailnet (e.g. via `tailscale0`)
 
 ### Server → Client (Inbound)
 
@@ -128,7 +130,7 @@ This document describes the detailed architecture of the Bonding overlay network
 
 **Platform Support**:
 - Windows: Wintun driver via FFI
-- Linux: `/dev/net/tun` (future)
+- Linux: TUN device (server uses `tun-rs` today)
 
 **Key Operations**:
 - `read_packet()`: Non-blocking read from virtual adapter
@@ -267,8 +269,16 @@ Typically deployed as Windows Service:
 
 Deployed as systemd service on Linux:
 - Bound to specific network interfaces
-- NAT rules configured via iptables/nftables
+- NAT rules configured via iptables/nftables (optionally configured automatically by the server)
 - Monitoring via health check endpoint
+
+#### Tailscale coexistence (Linux)
+
+If the server runs Tailscale and you want tunnel clients to access the tailnet, a practical approach is to NAT/MASQUERADE the tunnel subnet out via `tailscale0`.
+
+This is implemented as an optional server-side startup configuration (Linux only), using `iptables` rules for:
+- `POSTROUTING -j MASQUERADE` from the tunnel subnet to `tailscale0`
+- `FORWARD` allow rules (including `RELATED,ESTABLISHED` return traffic)
 
 ### Scaling
 

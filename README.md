@@ -4,7 +4,9 @@ A Windows-first, open-source bonding overlay that aggregates multiple network co
 
 ## Overview
 
-Bonding creates a virtual Layer-3 adapter (TUN) on Windows using Wintun, captures outbound IP packets, encrypts and encapsulates them into a custom tunnel protocol, and sends them across multiple physical interfaces. A server component reorders, validates, and decapsulates packets before NAT'ing them to the public internet.
+Bonding creates a virtual Layer-3 adapter (TUN) on Windows using Wintun, captures outbound IP packets, encrypts and encapsulates them into a custom tunnel protocol, and sends them across multiple physical interfaces.
+
+On the server side (Linux-first), packets are authenticated/decrypted and written to a Linux TUN device. The server can optionally enable IPv4 forwarding and set up NAT (MASQUERADE) to forward tunnel client traffic to the public internet and/or to a Tailscale interface (`tailscale0`).
 
 ## Features
 
@@ -50,6 +52,8 @@ The project is organized into three crates:
 - Linux with TUN/TAP support
 - iptables or nftables for NAT
 - UDP port accessible from clients
+
+**Note**: Server TUN mode is currently supported on **Linux**. Running the server on Windows is possible in principle (Wintun exists), but NAT/forwarding is more complex; see the Tailscale section below.
 
 ## Building
 
@@ -127,18 +131,9 @@ If you prefer a non-interactive foreground run, use:
 
 ### Server Setup (Linux)
 
-1. Configure iptables/nftables for NAT:
+The server can either be run in a basic UDP mode, or in **TUN mode** (Linux) to forward IP packets.
 
-```bash
-# Enable IP forwarding
-sudo sysctl -w net.ipv4.ip_forward=1
-
-# Configure NAT (example with iptables)
-sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-sudo iptables -A FORWARD -i tun0 -j ACCEPT
-```
-
-2. Run the server:
+1. Run the server:
 
 ```bash
 sudo ./bonding-server
@@ -149,6 +144,28 @@ This launches the terminal UI by default. For a headless foreground run:
 ```bash
 sudo ./bonding-server run
 ```
+
+2. (Optional) Enable TUN + auto configuration + NAT in the server config.
+
+Example (Linux server):
+
+```toml
+enable_tun = true
+auto_config_tun = true
+tun_device_name = "bonding0"
+tun_mtu = 1420
+tun_ipv4_addr = "198.18.0.1"
+tun_ipv4_prefix = 24
+
+# Full tunnel for clients typically includes a default route:
+tun_routes = ["0.0.0.0/0"]
+
+# Option A: allow tunnel clients to access the server's tailnet
+enable_ipv4_forwarding = true
+nat_masquerade_out_ifaces = ["tailscale0"]
+```
+
+This setup requires root (or equivalent capabilities) because it configures `net.ipv4.ip_forward` and `iptables`.
 
 ## Configuration
 
@@ -177,8 +194,27 @@ Both binaries provide a small terminal UI (TUI) as a usability layer.
   - `bonding-server run` (headless foreground run)
   - `bonding-server init-config [--force]`
 
-Current behavior is intentionally minimal while the full dataplane is under development:
-the client periodically sends a UDP keepalive to the configured server, and the server logs/acks it.
+When `enable_tun=true`, the client and server forward real IP packets between the local TUN device and UDP.
+
+By default, configurations ship with `enable_tun=false` as a safe default.
+
+## Tailscale coexistence
+
+Bonding can coexist with Tailscale. The main rule is to avoid overlapping routes/subnets and to avoid accidental “default route fights”.
+
+### Full tunnel + Tailscale on the server (recommended: Linux “Option A”)
+
+If the server is on Tailscale and you want **Bonding clients** to have access to the tailnet while still doing **full tunnel**:
+
+1. On the **client**, route `0.0.0.0/0` via the Bonding TUN (full tunnel).
+2. On the **server**, enable forwarding and NAT (MASQUERADE) out via `tailscale0` using:
+
+```toml
+enable_ipv4_forwarding = true
+nat_masquerade_out_ifaces = ["tailscale0"]
+```
+
+This provides outbound access to tailnet resources from tunnel clients. If you need tailnet devices to initiate connections back to tunnel clients, you likely want subnet-route advertisement instead (not implemented here).
 
 ## Troubleshooting
 

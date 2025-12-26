@@ -32,4 +32,7 @@ pub mod scheduler;
 pub mod transport;
 pub mod tun;
 
+#[cfg(target_os = "windows")]
+pub mod windows_admin;
+
 pub use proto::{Packet, PacketHeader, ProtocolVersion};
