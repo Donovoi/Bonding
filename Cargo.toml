@@ -1,9 +1,5 @@
 [workspace]
-members = [
-    "bonding-core",
-    "bonding-client",
-    "bonding-server",
-]
+members = ["bonding-core", "bonding-client", "bonding-server"]
 resolver = "2"
 
 [workspace.package]
@@ -21,7 +17,9 @@ tokio = { version = "1.40", features = ["full"] }
 socket2 = "0.5"
 
 # TUN/TAP devices
-tun-rs = { version = "2.7", features = ["async_tokio"], default-features = false }
+tun-rs = { version = "2.7", features = [
+    "async_tokio",
+], default-features = false }
 
 # Cryptography
 chacha20poly1305 = "0.10"
@@ -40,7 +38,11 @@ thiserror = "1.0"
 anyhow = "1.0"
 
 # Windows-specific
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+] }
 wintun = "0.5"
 
 # Testing
