@@ -1,79 +1,175 @@
 use std::io;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use wintun;
 
-use crate::tun::{TunDevice, TunConfig};
+use crate::tun::{TunDevice, TunInterface};
 
 pub struct WintunDevice {
-    session: Arc<wintun::Session>,
     adapter: Arc<wintun::Adapter>,
+    session: Arc<wintun::Session>,
 }
 
 impl WintunDevice {
-    pub fn new(config: TunConfig) -> io::Result<Self> {
-        // Load the wintun.dll
-        let wintun = unsafe { wintun::load() }.map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to load wintun.dll: {}", e),
-            )
-        })?;
-
-        // Create or open the adapter
-        let adapter = match wintun::Adapter::open(&wintun, &config.name) {
-            Ok(adapter) => adapter,
-            Err(_) => wintun::Adapter::create(&wintun, &config.name, &config.name, None)
-                .map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("Failed to create wintun adapter: {}", e),
-                    )
-                })?,
+    pub fn new(name: &str, tunnel_type: &str) -> io::Result<Self> {
+        // Load wintun.dll
+        let wintun = unsafe {
+            wintun::load().map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to load wintun.dll: {:?}", e),
+                )
+            })?
         };
 
-        // Set the IP address and netmask
-        // Note: This is typically done through the Windows API or netsh
-        // For now, we'll assume it's configured externally
+        // Create adapter
+        let adapter = match wintun::Adapter::open(&wintun, name) {
+            Ok(adapter) => adapter,
+            Err(_) => wintun::Adapter::create(&wintun, name, tunnel_type, None).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to create adapter: {:?}", e),
+                )
+            })?,
+        };
 
-        // Start a session
+        // Start session with 0x400000 ring capacity
         let session = adapter.start_session(wintun::MAX_RING_CAPACITY).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::Other,
-                format!("Failed to start wintun session: {}", e),
+                format!("Failed to start session: {:?}", e),
             )
         })?;
 
         Ok(WintunDevice {
-            session: Arc::new(session),
             adapter: Arc::new(adapter),
+            session: Arc::new(session),
         })
+    }
+
+    pub fn set_ip(&self, ip: Ipv4Addr, netmask: Ipv4Addr) -> io::Result<()> {
+        // Use netsh to set IP address
+        let output = std::process::Command::new("netsh")
+            .args(&[
+                "interface",
+                "ip",
+                "set",
+                "address",
+                &self.adapter.get_adapter_name().map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("Failed to get adapter name: {:?}", e),
+                    )
+                })?,
+                "static",
+                &ip.to_string(),
+                &netmask.to_string(),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "Failed to set IP address: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn set_mtu(&self, mtu: u32) -> io::Result<()> {
+        // Use netsh to set MTU
+        let output = std::process::Command::new("netsh")
+            .args(&[
+                "interface",
+                "ipv4",
+                "set",
+                "subinterface",
+                &self.adapter.get_adapter_name().map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("Failed to get adapter name: {:?}", e),
+                    )
+                })?,
+                &format!("mtu={}", mtu),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "Failed to set MTU: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn up(&self) -> io::Result<()> {
+        // Use netsh to enable interface
+        let output = std::process::Command::new("netsh")
+            .args(&[
+                "interface",
+                "set",
+                "interface",
+                &self.adapter.get_adapter_name().map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("Failed to get adapter name: {:?}", e),
+                    )
+                })?,
+                "admin=enabled",
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "Failed to enable interface: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            ));
+        }
+
+        Ok(())
     }
 
     fn read_packet(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // Try to receive a packet (non-blocking)
         match self.session.try_receive() {
-            Ok(Some(packet)) => {
-                let packet_bytes = packet.bytes();
-                let len = packet_bytes.len();
+            Ok(packet) => {
+                // Handle the Option type - packet might be None
+                if let Some(pkt) = packet {
+                    let packet_bytes = pkt.bytes();
+                    let len = packet_bytes.len();
 
-                if len > buf.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "Packet too large for buffer: {} bytes (buffer: {})",
-                            len,
-                            buf.len()
-                        ),
-                    ));
+                    if len > buf.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "Packet too large for buffer: {} bytes (buffer: {})",
+                                len,
+                                buf.len()
+                            ),
+                        ));
+                    }
+
+                    buf[..len].copy_from_slice(packet_bytes);
+                    Ok(len)
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "No packet available",
+                    ))
                 }
-
-                buf[..len].copy_from_slice(packet_bytes);
-                Ok(len)
             }
-            Ok(None) => Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "No packet available",
-            )),
             Err(e) => {
                 // Convert wintun error to io::Error
                 match e {
@@ -91,21 +187,26 @@ impl WintunDevice {
     }
 
     fn write_packet(&mut self, buf: &[u8]) -> io::Result<usize> {
-        // Allocate a send packet
-        let mut packet = self.session.allocate_send_packet(buf.len() as u16).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to allocate send packet: {}", e),
-            )
-        })?;
+        let len = buf.len();
 
-        // Copy data into the packet
-        packet.bytes_mut().copy_from_slice(buf);
+        // Allocate a send packet
+        let mut packet = self
+            .session
+            .allocate_send_packet(len as u16)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to allocate send packet: {:?}", e),
+                )
+            })?;
+
+        // Copy data into packet
+        packet.bytes_mut()[..len].copy_from_slice(buf);
 
         // Send the packet
         self.session.send_packet(packet);
 
-        Ok(buf.len())
+        Ok(len)
     }
 }
 
@@ -118,15 +219,26 @@ impl TunDevice for WintunDevice {
         self.write_packet(buf)
     }
 
-    fn name(&self) -> &str {
-        // The wintun adapter doesn't expose the name directly
-        // We'll return a placeholder for now
-        "wintun"
+    fn name(&self) -> io::Result<String> {
+        self.adapter.get_adapter_name().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to get adapter name: {:?}", e),
+            )
+        })
+    }
+}
+
+impl TunInterface for WintunDevice {
+    fn set_ip(&mut self, ip: Ipv4Addr, netmask: Ipv4Addr) -> io::Result<()> {
+        self.set_ip(ip, netmask)
     }
 
-    fn mtu(&self) -> io::Result<usize> {
-        // Wintun doesn't have a direct MTU query
-        // Return the default MTU for now
-        Ok(1500)
+    fn set_mtu(&mut self, mtu: u32) -> io::Result<()> {
+        self.set_mtu(mtu)
+    }
+
+    fn up(&mut self) -> io::Result<()> {
+        self.up()
     }
 }
