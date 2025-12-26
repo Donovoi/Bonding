@@ -191,6 +191,15 @@ Contributions are welcome! Please ensure:
 - No clippy warnings
 - Documentation is updated
 
+**Release Process:**
+- When you merge a PR with a version bump in `Cargo.toml`, an automated release pipeline will:
+  - Run all tests and quality checks
+  - Build binaries for Windows and Linux
+  - Create a GitHub Release with artifacts
+  - Generate release notes automatically
+
+See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed contribution guidelines and release workflow.
+
 ## License
 
 Licensed under either of:
