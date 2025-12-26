@@ -118,11 +118,24 @@ This document describes the detailed architecture of the Bonding overlay network
 - `PacketHeader`: Fixed 24-byte header with magic, version, session ID, sequence, flags
 - `Packet`: Complete packet with header + auth tag + payload
 - `ProtocolVersion`: Version negotiation and compatibility
+- `proto::control`: Small control protocol carried inside the packet payload
 
 **Invariants**:
 - All multi-byte fields are big-endian (network byte order)
 - Sequence numbers are monotonically increasing per session
 - Authentication tag covers both header and payload
+
+#### Control plane (TUN mode handshake)
+
+When running in TUN mode, the client and server also use a tiny control protocol embedded inside the normal packet payload. This enables explicit tunnel IPv4 assignment and multi-client routing.
+
+- Control messages are identified by a magic prefix (`BND1`) and version.
+- Current message types:
+  - `HELLO { requested_ipv4: Option<Ipv4Addr> }`
+  - `ASSIGN { ipv4: Ipv4Addr, prefix: u8 }`
+  - `NACK { code: u8, message: String }`
+
+The server uses `HELLO` to assign a session a single "VIP" (virtual IPv4 in the tunnel subnet). After assignment, client traffic is validated with anti-spoofing (inner IPv4 source must match the assigned VIP).
 
 ### tun (Virtual Adapter)
 
@@ -288,13 +301,14 @@ Linux remains the recommended server platform for predictable NAT/forwarding beh
 
 #### Multi-client routing (experimental)
 
-The TUN-mode server can track multiple clients, but routing is still intentionally simple:
+The TUN-mode server can track multiple clients, and routing is intentionally conservative:
 
-- The server learns a client "virtual IP" (inner IPv4 source address) by observing client→server packets.
-- When sending kernel→client traffic (TUN→UDP), it routes packets by the inner IPv4 destination address.
-- Once at least one client IP has been learned, the server will **not guess** a destination for unknown packets (to avoid sending one client's traffic to another).
+- Each session is assigned a single client VIP (virtual IPv4) inside the tunnel subnet using the `HELLO`/`ASSIGN` handshake.
+- When sending kernel→client traffic (TUN→UDP), the server routes packets by the inner IPv4 **destination** address to the session assigned to that VIP.
+- Once multiple clients are present, the server will **not guess** a destination for unknown packets (to avoid cross-client traffic leaks).
+- Anti-spoofing: the server drops client→server data packets if the inner IPv4 **source** does not match the session’s assigned VIP.
 
-This requires that each client uses a unique tunnel IPv4 address within the tunnel subnet and that the server OS routes that subnet via the TUN interface.
+Compatibility note: for older clients, the server may fall back to implicitly assigning the VIP from the first observed IPv4 source address (best-effort). Explicit handshake-based assignment is preferred.
 
 #### Backpressure / queueing
 
