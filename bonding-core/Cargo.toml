@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 tokio = { workspace = true }
 socket2 = { workspace = true }
+tun-rs = { workspace = true }
 chacha20poly1305 = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
@@ -19,6 +20,7 @@ anyhow = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }
+wintun = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

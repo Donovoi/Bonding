@@ -20,6 +20,9 @@ tokio = { version = "1.40", features = ["full"] }
 # Networking
 socket2 = "0.5"
 
+# TUN/TAP devices
+tun-rs = { version = "2.7", features = ["async_tokio"], default-features = false }
+
 # Cryptography
 chacha20poly1305 = "0.10"
 rand = "0.8"
@@ -38,6 +41,7 @@ anyhow = "1.0"
 
 # Windows-specific
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
+wintun = "0.5"
 
 # Testing
 mockall = "0.13"

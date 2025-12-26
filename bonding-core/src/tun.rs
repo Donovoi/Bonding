@@ -2,7 +2,7 @@
 //!
 //! This module provides a cross-platform interface for TUN devices:
 //! - Windows: Uses Wintun
-//! - Linux: Uses /dev/net/tun (future)
+//! - Linux: Uses /dev/net/tun
 //!
 //! # Safety
 //!
@@ -14,14 +14,35 @@ use std::io;
 #[cfg(target_os = "windows")]
 pub mod wintun;
 
+#[cfg(target_os = "linux")]
+pub mod linux;
+
 /// Trait for TUN device implementations
+///
+/// # Platform Differences
+///
+/// **Windows (Wintun)**: Fully supports synchronous read/write operations.
+///
+/// **Linux (tun-rs)**: The underlying library is async-only. The sync methods
+/// will return `WouldBlock` errors. Use `LinuxTunDevice::device_handle()` to
+/// access the async device for actual I/O operations.
 pub trait TunDevice: Send + Sync {
     /// Read a packet from the TUN device
     ///
     /// Returns the number of bytes read into the buffer.
+    ///
+    /// # Platform Notes
+    ///
+    /// - **Windows**: Performs non-blocking read, returns WouldBlock if no data
+    /// - **Linux**: Always returns WouldBlock, use async device handle instead
     fn read_packet(&mut self, buf: &mut [u8]) -> io::Result<usize>;
 
     /// Write a packet to the TUN device
+    ///
+    /// # Platform Notes
+    ///
+    /// - **Windows**: Performs synchronous write
+    /// - **Linux**: Always returns WouldBlock after validation, use async device handle instead
     fn write_packet(&self, buf: &[u8]) -> io::Result<()>;
 
     /// Get the MTU of the device
@@ -33,6 +54,9 @@ pub trait TunDevice: Send + Sync {
 
 #[cfg(target_os = "windows")]
 pub use wintun::WintunDevice;
+
+#[cfg(target_os = "linux")]
+pub use linux::LinuxTunDevice;
 
 #[cfg(test)]
 mod tests {
