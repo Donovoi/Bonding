@@ -21,6 +21,10 @@ use std::sync::Arc;
 use wintun::Session;
 
 /// Default MTU for Wintun adapters
+///
+/// Set to 1420 bytes to accommodate tunnel overhead while staying under the
+/// standard Ethernet MTU of 1500 bytes. This leaves 80 bytes for protocol
+/// headers (IP, UDP, encryption overhead), preventing fragmentation.
 const DEFAULT_MTU: usize = 1420;
 
 /// Wintun adapter name prefix
@@ -33,8 +37,8 @@ const ADAPTER_NAME: &str = "Bonding";
 /// other Wintun-based VPN applications. This GUID is consistent across all Bonding
 /// installations to enable adapter reuse and proper identification.
 ///
-/// The GUID is represented as a u128 constant.
-/// Format: 5fb1c3e4-2e82-4e1b-a2f6-1d5c3e4f5a6b
+/// The GUID is represented as a u128 constant in big-endian format.
+/// Standard format: 5fb1c3e4-2e82-4e1b-a2f6-1d5c3e4f5a6b
 const ADAPTER_GUID: u128 = 0x5fb1c3e4_2e82_4e1b_a2f6_1d5c3e4f5a6b;
 
 /// Wintun TUN device implementation
@@ -74,6 +78,8 @@ impl WintunDevice {
         use wintun::Adapter;
 
         // Load wintun.dll
+        // SAFETY: wintun::load() is designed to be called without preconditions.
+        // It safely handles library loading and returns an error if the DLL cannot be found.
         let wintun = unsafe {
             wintun::load().map_err(|e| {
                 io::Error::new(
