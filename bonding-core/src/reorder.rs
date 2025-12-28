@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 const MAX_BUFFER_SIZE: usize = 1024;
 
 /// Maximum age of packets in the buffer before they're considered stale
-const MAX_PACKET_AGE: Duration = Duration::from_secs(5);
+const MAX_PACKET_AGE: Duration = Duration::from_millis(500);
 
 /// Size of the replay window for sequence number tracking
 const REPLAY_WINDOW_SIZE: u64 = 1024;
@@ -41,6 +41,7 @@ struct BufferedPacket {
 }
 
 /// Reorder buffer for handling out-of-order packets
+#[derive(Debug, Clone)]
 pub struct ReorderBuffer {
     /// Expected next sequence number
     next_expected: u64,
@@ -126,12 +127,32 @@ impl ReorderBuffer {
     /// next expected sequence number.
     pub fn retrieve(&mut self) -> Vec<(u64, Vec<u8>)> {
         let mut result = Vec::new();
+        let now = Instant::now();
+
+        // Check if the earliest buffered packet has been waiting too long.
+        // If so, skip the missing packets before it.
+        if let Some((&first_seq, first_packet)) = self.buffer.iter().next() {
+            if first_seq > self.next_expected {
+                if now.duration_since(first_packet.received_at) > self.max_age {
+                    // We've waited long enough for the gap to fill.
+                    // Skip missing packets and start from this one.
+                    self.next_expected = first_seq;
+                }
+            }
+        }
 
         // Clean up stale packets first
         self.cleanup_stale();
 
         // Retrieve all consecutive packets starting from next_expected
         while let Some((&seq, _)) = self.buffer.iter().next() {
+            // If we have packets with sequence < next_expected (e.g. due to skip above),
+            // they are duplicates or late arrivals that we decided to skip. Drop them.
+            if seq < self.next_expected {
+                self.buffer.remove(&seq);
+                continue;
+            }
+
             if seq != self.next_expected {
                 break;
             }

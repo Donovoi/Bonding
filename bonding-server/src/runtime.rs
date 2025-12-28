@@ -4,9 +4,12 @@ use bonding_core::control::ServerConfig;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use bonding_core::proto::control::{self, ControlMessage};
 use bonding_core::proto::Packet;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use bonding_core::reorder::ReorderBuffer;
 use bonding_core::transport::{EncryptionKey, PacketCrypto};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
 
@@ -60,6 +63,46 @@ fn ipv4_src_dst(packet: &[u8]) -> Option<(Ipv4Addr, Ipv4Addr)> {
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn ipv4_dst(packet: &[u8]) -> Option<Ipv4Addr> {
     ipv4_src_dst(packet).map(|(_, dst)| dst)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[derive(Debug, Clone)]
+struct SessionState {
+    peers: std::collections::HashMap<SocketAddr, Instant>,
+    assigned_vip: Option<Ipv4Addr>,
+    last_seen: Instant,
+    reorder: ReorderBuffer,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl SessionState {
+    fn new(peer: SocketAddr, now: Instant) -> Self {
+        let mut peers = std::collections::HashMap::new();
+        peers.insert(peer, now);
+        Self {
+            peers,
+            assigned_vip: None,
+            last_seen: now,
+            reorder: ReorderBuffer::new(),
+        }
+    }
+
+    fn update(&mut self, peer: SocketAddr, now: Instant) {
+        self.peers.insert(peer, now);
+        self.last_seen = now;
+    }
+
+    fn prune_peers(&mut self, ttl: Duration, now: Instant) {
+        self.peers.retain(|_, last_seen| now.duration_since(*last_seen) < ttl);
+    }
+
+    fn best_peer(&self) -> Option<SocketAddr> {
+        // Simple strategy: use the most recently seen peer
+        self.peers
+            .iter()
+            .max_by_key(|(_, last_seen)| *last_seen)
+            .map(|(peer, _)| *peer)
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -444,20 +487,10 @@ async fn run_server_tun_mode_windows(
     let mut received: u64 = 0;
     let mut tx_seq: u64 = 1;
 
-    let mut last_peer: Option<SocketAddr> = None;
-    let mut last_session_id: Option<u64> = None;
-
-    // Multi-client support with explicit per-session VIP assignment:
-    // - Track active sessions by session_id -> (peer, last_seen)
-    // - Assign (and remember) a single VIP per session
-    // - Route server->client packets by IPv4 destination address to the
-    //   assigned session/peer (no traffic learning)
-    // - Enforce anti-spoofing: drop client packets whose inner IPv4 source
-    //   address doesn't match the session's assigned VIP
-    let mut sessions: HashMap<u64, (SocketAddr, Instant)> = HashMap::new();
-    let mut assigned_by_session: HashMap<u64, Ipv4Addr> = HashMap::new();
+    // Multi-client support with explicit per-session VIP assignment
+    let mut sessions: HashMap<u64, SessionState> = HashMap::new();
     let mut assigned_set: HashSet<Ipv4Addr> = HashSet::new();
-    let mut vip_to_session: HashMap<Ipv4Addr, (u64, SocketAddr, Instant)> = HashMap::new();
+    let mut vip_to_session: HashMap<Ipv4Addr, u64> = HashMap::new();
     let mut dropped_net_to_tun: u64 = 0;
     let mut dropped_net_to_tun_last: u64 = 0;
 
@@ -477,10 +510,16 @@ async fn run_server_tun_mode_windows(
             _ = health_tick.tick() => {
                 let now = Instant::now();
 
+                // Prune peers within sessions
+                for state in sessions.values_mut() {
+                    state.prune_peers(SESSION_TTL, now);
+                }
+
+                // Prune empty/expired sessions
                 let expired: Vec<u64> = sessions
                     .iter()
-                    .filter_map(|(sid, (_peer, last_seen))| {
-                        if now.duration_since(*last_seen) >= SESSION_TTL {
+                    .filter_map(|(sid, state)| {
+                        if state.peers.is_empty() || now.duration_since(state.last_seen) >= SESSION_TTL {
                             Some(*sid)
                         } else {
                             None
@@ -489,67 +528,52 @@ async fn run_server_tun_mode_windows(
                     .collect();
 
                 for sid in expired {
-                    sessions.remove(&sid);
-                    if let Some(ip) = assigned_by_session.remove(&sid) {
-                        assigned_set.remove(&ip);
-                        vip_to_session.remove(&ip);
+                    if let Some(state) = sessions.remove(&sid) {
+                        if let Some(ip) = state.assigned_vip {
+                            assigned_set.remove(&ip);
+                            vip_to_session.remove(&ip);
+                        }
                     }
                 }
-
-                // Remove mappings for sessions we no longer track.
-                vip_to_session.retain(|_, (sid, _peer, _last_seen)| sessions.contains_key(sid));
 
                 let dropped_delta = dropped_net_to_tun.saturating_sub(dropped_net_to_tun_last);
                 dropped_net_to_tun_last = dropped_net_to_tun;
 
                 (log.as_ref())(format!(
-                    "Health tick: received_packets={received} peer_known={} sessions={} clients={} dropped_udp_to_tun={} (+{})",
-                    last_peer.is_some(),
+                    "Health tick: received_packets={received} sessions={} clients={} dropped_udp_to_tun={} (+{})",
                     sessions.len(),
-                    assigned_by_session.len(),
+                    vip_to_session.len(),
                     dropped_net_to_tun,
                     dropped_delta
                 ));
             }
 
             _ = keepalive_tick.tick() => {
-                let now = Instant::now();
-                let targets: Vec<(u64, SocketAddr)> = sessions
-                    .iter()
-                    .filter_map(|(sid, (peer, last_seen))| {
-                        if now.duration_since(*last_seen) < SESSION_TTL {
-                            Some((*sid, *peer))
+                let flags_raw = PacketFlags::ACK_ONLY;
+                
+                for (sid, state) in &sessions {
+                    // Send keepalive to ALL active peers to maintain NAT mappings
+                    for (peer, _) in &state.peers {
+                        let wire = if let Some(ref crypto) = crypto {
+                            crypto
+                                .seal_packet_with_flags(
+                                    NONCE_DOMAIN_SERVER_TO_CLIENT,
+                                    *sid,
+                                    tx_seq,
+                                    flags_raw,
+                                    &[],
+                                )
+                                .context("failed to seal ACK_ONLY keepalive")?
+                                .encode()
                         } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                if targets.is_empty() {
-                    continue;
-                }
-
-                let flags_raw: u8 = PacketFlags::ACK_ONLY;
-                for (session_id, peer) in targets {
-                    let wire = if let Some(ref crypto) = crypto {
-                        crypto
-                            .seal_packet_with_flags(
-                                NONCE_DOMAIN_SERVER_TO_CLIENT,
-                                session_id,
-                                tx_seq,
-                                flags_raw,
-                                &[],
-                            )
-                            .context("failed to seal ACK_ONLY keepalive")?
-                            .encode()
-                    } else {
-                        let mut pkt = Packet::new(session_id, tx_seq, Vec::new());
-                        pkt.header.flags = PacketFlags::from_raw(flags_raw);
-                        pkt.encode()
-                    };
-
+                            let mut pkt = Packet::new(*sid, tx_seq, Vec::new());
+                            pkt.header.flags = PacketFlags::from_raw(flags_raw);
+                            pkt.encode()
+                        };
+                        
+                        let _ = sock.send_to(&wire, *peer).await;
+                    }
                     tx_seq = tx_seq.wrapping_add(1);
-                    let _ = sock.send_to(&wire, peer).await;
                 }
             }
 
@@ -578,16 +602,11 @@ async fn run_server_tun_mode_windows(
                 };
 
                 let now = Instant::now();
-                sessions.insert(pkt.header.session_id, (peer, now));
-
-                // If we've assigned this session a VIP, keep the vip->session mapping fresh
-                // even for ACK_ONLY keepalives.
-                if let Some(ip) = assigned_by_session.get(&pkt.header.session_id).copied() {
-                    vip_to_session.insert(ip, (pkt.header.session_id, peer, now));
-                }
-
-                last_peer = Some(peer);
-                last_session_id = Some(pkt.header.session_id);
+                let session_id = pkt.header.session_id;
+                
+                sessions.entry(session_id)
+                    .and_modify(|s| s.update(peer, now))
+                    .or_insert_with(|| SessionState::new(peer, now));
 
                 if pkt.header.flags.is_set(PacketFlags::ACK_ONLY) || payload.is_empty() {
                     continue;
@@ -597,7 +616,12 @@ async fn run_server_tun_mode_windows(
                 if let Some(ctrl) = control::decode(&payload) {
                     match ctrl {
                         ControlMessage::Hello { requested_ipv4 } => {
-                            let assigned = if let Some(ip) = assigned_by_session.get(&pkt.header.session_id).copied() {
+                            let mut assigned_ip = None;
+                            if let Some(state) = sessions.get(&session_id) {
+                                assigned_ip = state.assigned_vip;
+                            }
+
+                            let assigned = if let Some(ip) = assigned_ip {
                                 Ok(ip)
                             } else {
                                 let candidate = match requested_ipv4 {
@@ -628,9 +652,11 @@ async fn run_server_tun_mode_windows(
 
                                 match candidate {
                                     Ok(ip) => {
-                                        assigned_by_session.insert(pkt.header.session_id, ip);
+                                        if let Some(state) = sessions.get_mut(&session_id) {
+                                            state.assigned_vip = Some(ip);
+                                        }
                                         assigned_set.insert(ip);
-                                        vip_to_session.insert(ip, (pkt.header.session_id, peer, now));
+                                        vip_to_session.insert(ip, session_id);
                                         Ok(ip)
                                     }
                                     Err(nack) => Err(nack),
@@ -648,7 +674,7 @@ async fn run_server_tun_mode_windows(
                                 crypto
                                     .seal_packet_with_flags(
                                         NONCE_DOMAIN_SERVER_TO_CLIENT,
-                                        pkt.header.session_id,
+                                        session_id,
                                         tx_seq,
                                         flags_raw,
                                         &resp_payload,
@@ -656,7 +682,7 @@ async fn run_server_tun_mode_windows(
                                     .context("failed to seal control response")?
                                     .encode()
                             } else {
-                                let mut out = Packet::new(pkt.header.session_id, tx_seq, resp_payload);
+                                let mut out = Packet::new(session_id, tx_seq, resp_payload);
                                 out.header.flags = PacketFlags::from_raw(flags_raw);
                                 out.encode()
                             };
@@ -672,11 +698,13 @@ async fn run_server_tun_mode_windows(
                     continue;
                 }
 
-                // Implicit assignment fallback: if the session isn't assigned yet and this is an
-                // IPv4 packet, pin the session to its IPv4 source address.
-                if let std::collections::hash_map::Entry::Vacant(e) =
-                    assigned_by_session.entry(pkt.header.session_id)
-                {
+                // Implicit assignment fallback
+                let mut assigned_ip = None;
+                if let Some(state) = sessions.get(&session_id) {
+                    assigned_ip = state.assigned_vip;
+                }
+
+                if assigned_ip.is_none() {
                     if let Some((src, _dst)) = ipv4_src_dst(&payload) {
                         let ok = if let Some(ref p) = pool {
                             p.contains(src) && !p.is_reserved(src)
@@ -685,19 +713,21 @@ async fn run_server_tun_mode_windows(
                         };
 
                         if ok && !assigned_set.contains(&src) {
-                            e.insert(src);
+                            if let Some(state) = sessions.get_mut(&session_id) {
+                                state.assigned_vip = Some(src);
+                            }
                             assigned_set.insert(src);
-                            vip_to_session.insert(src, (pkt.header.session_id, peer, now));
+                            vip_to_session.insert(src, session_id);
+                            assigned_ip = Some(src);
                         }
                     }
                 }
 
-                let Some(assigned) = assigned_by_session.get(&pkt.header.session_id).copied() else {
-                    // No assignment yet; drop data until HELLO/ASSIGN or implicit assignment.
+                let Some(assigned) = assigned_ip else {
                     continue;
                 };
 
-                // Anti-spoof: require IPv4 and correct source address.
+                // Anti-spoof
                 let Some((src, _dst)) = ipv4_src_dst(&payload) else {
                     continue;
                 };
@@ -705,10 +735,16 @@ async fn run_server_tun_mode_windows(
                     continue;
                 }
 
-                vip_to_session.insert(assigned, (pkt.header.session_id, peer, now));
-
-                if let Err(_e) = net_to_tun_tx.try_send(payload) {
-                    dropped_net_to_tun = dropped_net_to_tun.wrapping_add(1);
+                if let Some(state) = sessions.get_mut(&session_id) {
+                    if let Err(_e) = state.reorder.insert(pkt.header.sequence, payload) {
+                        continue;
+                    }
+                    
+                    for (_seq, data) in state.reorder.retrieve() {
+                        if let Err(_e) = net_to_tun_tx.try_send(data) {
+                            dropped_net_to_tun = dropped_net_to_tun.wrapping_add(1);
+                        }
+                    }
                 }
             }
 
@@ -723,26 +759,21 @@ async fn run_server_tun_mode_windows(
                     }
                 }
 
-                let mut target: Option<(SocketAddr, u64)> = None;
+                let mut target_session: Option<u64> = None;
                 if let Some(dst) = ipv4_dst(&ip_packet) {
-                    if let Some((sid, peer, _last_seen)) = vip_to_session.get(&dst) {
-                        target = Some((*peer, *sid));
+                    if let Some(sid) = vip_to_session.get(&dst) {
+                        target_session = Some(*sid);
                     }
                 }
 
-                // Preserve single-client behavior until we learn at least one client VIP.
-                if target.is_none() {
-                    if vip_to_session.is_empty() {
-                        if let (Some(peer), Some(session_id)) = (last_peer, last_session_id) {
-                            target = Some((peer, session_id));
-                        }
-                    } else {
-                        // Multi-client mode: don't guess.
-                        continue;
-                    }
+                let Some(session_id) = target_session else { continue; };
+                
+                let mut target_peer = None;
+                if let Some(state) = sessions.get(&session_id) {
+                    target_peer = state.best_peer();
                 }
-
-                let Some((peer, session_id)) = target else { continue; };
+                
+                let Some(peer) = target_peer else { continue; };
 
                 let wire = if let Some(ref crypto) = crypto {
                     crypto
@@ -879,13 +910,9 @@ async fn run_server_tun_mode(
     let mut received: u64 = 0;
     let mut tx_seq: u64 = 1;
 
-    let mut last_peer: Option<SocketAddr> = None;
-    let mut last_session_id: Option<u64> = None;
-
-    let mut sessions: HashMap<u64, (SocketAddr, Instant)> = HashMap::new();
-    let mut assigned_by_session: HashMap<u64, Ipv4Addr> = HashMap::new();
+    let mut sessions: HashMap<u64, SessionState> = HashMap::new();
     let mut assigned_set: HashSet<Ipv4Addr> = HashSet::new();
-    let mut vip_to_session: HashMap<Ipv4Addr, (u64, SocketAddr, Instant)> = HashMap::new();
+    let mut vip_to_session: HashMap<Ipv4Addr, u64> = HashMap::new();
 
     const SESSION_TTL: Duration = Duration::from_secs(30);
 
@@ -903,10 +930,16 @@ async fn run_server_tun_mode(
             _ = health_tick.tick() => {
                 let now = Instant::now();
 
+                // Prune peers within sessions
+                for state in sessions.values_mut() {
+                    state.prune_peers(SESSION_TTL, now);
+                }
+
+                // Prune empty/expired sessions
                 let expired: Vec<u64> = sessions
                     .iter()
-                    .filter_map(|(sid, (_peer, last_seen))| {
-                        if now.duration_since(*last_seen) >= SESSION_TTL {
+                    .filter_map(|(sid, state)| {
+                        if state.peers.is_empty() || now.duration_since(state.last_seen) >= SESSION_TTL {
                             Some(*sid)
                         } else {
                             None
@@ -915,62 +948,47 @@ async fn run_server_tun_mode(
                     .collect();
 
                 for sid in expired {
-                    sessions.remove(&sid);
-                    if let Some(ip) = assigned_by_session.remove(&sid) {
-                        assigned_set.remove(&ip);
-                        vip_to_session.remove(&ip);
+                    if let Some(state) = sessions.remove(&sid) {
+                        if let Some(ip) = state.assigned_vip {
+                            assigned_set.remove(&ip);
+                            vip_to_session.remove(&ip);
+                        }
                     }
                 }
 
-                // Remove mappings for sessions we no longer track.
-                vip_to_session.retain(|_, (sid, _peer, _last_seen)| sessions.contains_key(sid));
-
                 (log.as_ref())(format!(
-                    "Health tick: received_packets={received} peer_known={} sessions={} clients={}",
-                    last_peer.is_some(),
+                    "Health tick: received_packets={received} sessions={} clients={}",
                     sessions.len(),
-                    assigned_by_session.len()
+                    vip_to_session.len()
                 ));
             }
 
             _ = keepalive_tick.tick() => {
-                let now = Instant::now();
-                let targets: Vec<(u64, SocketAddr)> = sessions
-                    .iter()
-                    .filter_map(|(sid, (peer, last_seen))| {
-                        if now.duration_since(*last_seen) < SESSION_TTL {
-                            Some((*sid, *peer))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                if targets.is_empty() {
-                    continue;
-                }
-
                 let flags_raw = PacketFlags::ACK_ONLY;
-                for (session_id, peer) in targets {
-                    let wire = if let Some(ref crypto) = crypto {
-                        crypto
-                            .seal_packet_with_flags(
-                                NONCE_DOMAIN_SERVER_TO_CLIENT,
-                                session_id,
-                                tx_seq,
-                                flags_raw,
-                                &[],
-                            )
-                            .context("failed to seal ACK_ONLY keepalive")?
-                            .encode()
-                    } else {
-                        let mut pkt = Packet::new(session_id, tx_seq, Vec::new());
-                        pkt.header.flags = PacketFlags::from_raw(flags_raw);
-                        pkt.encode()
-                    };
-
+                
+                for (sid, state) in &sessions {
+                    // Send keepalive to ALL active peers to maintain NAT mappings
+                    for (peer, _) in &state.peers {
+                        let wire = if let Some(ref crypto) = crypto {
+                            crypto
+                                .seal_packet_with_flags(
+                                    NONCE_DOMAIN_SERVER_TO_CLIENT,
+                                    *sid,
+                                    tx_seq,
+                                    flags_raw,
+                                    &[],
+                                )
+                                .context("failed to seal ACK_ONLY keepalive")?
+                                .encode()
+                        } else {
+                            let mut pkt = Packet::new(*sid, tx_seq, Vec::new());
+                            pkt.header.flags = PacketFlags::from_raw(flags_raw);
+                            pkt.encode()
+                        };
+                        
+                        let _ = sock.send_to(&wire, *peer).await;
+                    }
                     tx_seq = tx_seq.wrapping_add(1);
-                    let _ = sock.send_to(&wire, peer).await;
                 }
             }
 
@@ -999,16 +1017,11 @@ async fn run_server_tun_mode(
                 };
 
                 let now = Instant::now();
-                sessions.insert(pkt.header.session_id, (peer, now));
-
-                // If we've assigned this session a VIP, keep the vip->session mapping fresh
-                // even for ACK_ONLY keepalives.
-                if let Some(ip) = assigned_by_session.get(&pkt.header.session_id).copied() {
-                    vip_to_session.insert(ip, (pkt.header.session_id, peer, now));
-                }
-
-                last_peer = Some(peer);
-                last_session_id = Some(pkt.header.session_id);
+                let session_id = pkt.header.session_id;
+                
+                sessions.entry(session_id)
+                    .and_modify(|s| s.update(peer, now))
+                    .or_insert_with(|| SessionState::new(peer, now));
 
                 if pkt.header.flags.is_set(PacketFlags::ACK_ONLY) || payload.is_empty() {
                     continue;
@@ -1018,7 +1031,12 @@ async fn run_server_tun_mode(
                 if let Some(ctrl) = control::decode(&payload) {
                     match ctrl {
                         ControlMessage::Hello { requested_ipv4 } => {
-                            let assigned = if let Some(ip) = assigned_by_session.get(&pkt.header.session_id).copied() {
+                            let mut assigned_ip = None;
+                            if let Some(state) = sessions.get(&session_id) {
+                                assigned_ip = state.assigned_vip;
+                            }
+
+                            let assigned = if let Some(ip) = assigned_ip {
                                 Ok(ip)
                             } else {
                                 let candidate = match requested_ipv4 {
@@ -1049,9 +1067,11 @@ async fn run_server_tun_mode(
 
                                 match candidate {
                                     Ok(ip) => {
-                                        assigned_by_session.insert(pkt.header.session_id, ip);
+                                        if let Some(state) = sessions.get_mut(&session_id) {
+                                            state.assigned_vip = Some(ip);
+                                        }
                                         assigned_set.insert(ip);
-                                        vip_to_session.insert(ip, (pkt.header.session_id, peer, now));
+                                        vip_to_session.insert(ip, session_id);
                                         Ok(ip)
                                     }
                                     Err(nack) => Err(nack),
@@ -1069,7 +1089,7 @@ async fn run_server_tun_mode(
                                 crypto
                                     .seal_packet_with_flags(
                                         NONCE_DOMAIN_SERVER_TO_CLIENT,
-                                        pkt.header.session_id,
+                                        session_id,
                                         tx_seq,
                                         flags_raw,
                                         &resp_payload,
@@ -1077,7 +1097,7 @@ async fn run_server_tun_mode(
                                     .context("failed to seal control response")?
                                     .encode()
                             } else {
-                                let mut out = Packet::new(pkt.header.session_id, tx_seq, resp_payload);
+                                let mut out = Packet::new(session_id, tx_seq, resp_payload);
                                 out.header.flags = PacketFlags::from_raw(flags_raw);
                                 out.encode()
                             };
@@ -1093,11 +1113,13 @@ async fn run_server_tun_mode(
                     continue;
                 }
 
-                // Implicit assignment fallback: if the session isn't assigned yet and this is an
-                // IPv4 packet, pin the session to its IPv4 source address.
-                if let std::collections::hash_map::Entry::Vacant(e) =
-                    assigned_by_session.entry(pkt.header.session_id)
-                {
+                // Implicit assignment fallback
+                let mut assigned_ip = None;
+                if let Some(state) = sessions.get(&session_id) {
+                    assigned_ip = state.assigned_vip;
+                }
+
+                if assigned_ip.is_none() {
                     if let Some((src, _dst)) = ipv4_src_dst(&payload) {
                         let ok = if let Some(ref p) = pool {
                             p.contains(src) && !p.is_reserved(src)
@@ -1106,15 +1128,17 @@ async fn run_server_tun_mode(
                         };
 
                         if ok && !assigned_set.contains(&src) {
-                            e.insert(src);
+                            if let Some(state) = sessions.get_mut(&session_id) {
+                                state.assigned_vip = Some(src);
+                            }
                             assigned_set.insert(src);
-                            vip_to_session.insert(src, (pkt.header.session_id, peer, now));
+                            vip_to_session.insert(src, session_id);
+                            assigned_ip = Some(src);
                         }
                     }
                 }
 
-                let Some(assigned) = assigned_by_session.get(&pkt.header.session_id).copied() else {
-                    // No assignment yet; drop data until HELLO/ASSIGN or implicit assignment.
+                let Some(assigned) = assigned_ip else {
                     continue;
                 };
 
@@ -1126,9 +1150,17 @@ async fn run_server_tun_mode(
                     continue;
                 }
 
-                vip_to_session.insert(assigned, (pkt.header.session_id, peer, now));
+                // vip_to_session is already set during assignment
 
-                dev.send(&payload).await.context("failed to write packet to TUN")?;
+                if let Some(state) = sessions.get_mut(&session_id) {
+                    if let Err(_e) = state.reorder.insert(pkt.header.sequence, payload) {
+                        continue;
+                    }
+                    
+                    for (_seq, data) in state.reorder.retrieve() {
+                        dev.send(&data).await.context("failed to write packet to TUN")?;
+                    }
+                }
             }
 
             tun_len = dev.recv(&mut tun_buf) => {
@@ -1145,24 +1177,21 @@ async fn run_server_tun_mode(
                     }
                 }
 
-                let mut target: Option<(SocketAddr, u64)> = None;
+                let mut target_session: Option<u64> = None;
                 if let Some(dst) = ipv4_dst(plaintext) {
-                    if let Some((sid, peer, _last_seen)) = vip_to_session.get(&dst) {
-                        target = Some((*peer, *sid));
+                    if let Some(sid) = vip_to_session.get(&dst) {
+                        target_session = Some(*sid);
                     }
                 }
 
-                if target.is_none() {
-                    if vip_to_session.is_empty() {
-                        if let (Some(peer), Some(session_id)) = (last_peer, last_session_id) {
-                            target = Some((peer, session_id));
-                        }
-                    } else {
-                        continue;
-                    }
+                let Some(session_id) = target_session else { continue; };
+                
+                let mut target_peer = None;
+                if let Some(state) = sessions.get(&session_id) {
+                    target_peer = state.best_peer();
                 }
-
-                let Some((peer, session_id)) = target else { continue; };
+                
+                let Some(peer) = target_peer else { continue; };
 
                 let wire = if let Some(ref crypto) = crypto {
                     crypto
