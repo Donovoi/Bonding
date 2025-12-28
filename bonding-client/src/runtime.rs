@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
 use base64::Engine;
-use bonding_core::control::BondingConfig;
+use bonding_core::control::{BondingConfig, InterfaceDiscovery};
 #[cfg(target_os = "windows")]
 use bonding_core::proto::control::{self, ControlMessage};
 use bonding_core::proto::Packet;
 #[cfg(target_os = "windows")]
 use bonding_core::proto::PacketFlags;
-use bonding_core::transport::{EncryptionKey, PacketCrypto};
+use bonding_core::reorder::ReorderBuffer;
+use bonding_core::scheduler::{BondingMode, Scheduler};
+use bonding_core::transport::{EncryptionKey, PacketCrypto, TransportPath};
 #[cfg(target_os = "windows")]
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -222,11 +224,57 @@ async fn run_client_tun_mode(
     let mut dropped_net_to_tun: u64 = 0;
     let mut dropped_net_to_tun_last: u64 = 0;
 
-    // Bind an ephemeral UDP socket.
-    let sock = UdpSocket::bind("0.0.0.0:0")
-        .await
-        .context("failed to bind UDP socket")?;
-    (log.as_ref())(format!("UDP socket bound: {}", sock.local_addr()?));
+    let mut reorder = ReorderBuffer::new();
+
+    // Interface Discovery & Transport Setup
+    let mut paths = Vec::new();
+    let interfaces = InterfaceDiscovery::discover_bondable();
+
+    if interfaces.is_empty() {
+        (log.as_ref())(
+            "No bondable interfaces found; falling back to default 0.0.0.0:0".to_string(),
+        );
+        let path = TransportPath::new(0, "0.0.0.0:0".parse()?, server).await?;
+        paths.push(path);
+    } else {
+        for (i, iface) in interfaces.iter().enumerate() {
+            // Try to bind to the first IPv4 address of the interface
+            if let Some(ip) = iface.addresses.iter().find(|ip| ip.is_ipv4()) {
+                let local_addr = SocketAddr::new(*ip, 0);
+                match TransportPath::new(i, local_addr, server).await {
+                    Ok(path) => {
+                        (log.as_ref())(format!(
+                            "Bound path #{} on interface '{}' ({})",
+                            i, iface.name, local_addr
+                        ));
+                        paths.push(path);
+                    }
+                    Err(e) => {
+                        (log.as_ref())(format!(
+                            "Failed to bind path on interface '{}': {}",
+                            iface.name, e
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if paths.is_empty() {
+        let path = TransportPath::new(0, "0.0.0.0:0".parse()?, server).await?;
+        paths.push(path);
+    }
+
+    // Scheduler Setup
+    let mode = match cfg.bonding_mode.as_str() {
+        "redundant" => BondingMode::Redundant,
+        "preferred" => BondingMode::Preferred,
+        _ => BondingMode::Stripe,
+    };
+    let mut scheduler = Scheduler::new(mode);
+    for path in &paths {
+        scheduler.add_path(path.id);
+    }
 
     // Create/open the adapter up-front so we can auto-configure it before pumping.
     let tun = WintunDevice::new(&cfg.adapter_name).with_context(|| {
@@ -323,7 +371,32 @@ async fn run_client_tun_mode(
         }
     });
 
-    let mut udp_buf = [0u8; UDP_RECV_BUF_SIZE];
+    // Receive Loop Setup
+    let (udp_rx_tx, mut udp_rx_rx) =
+        tokio::sync::mpsc::channel::<(Vec<u8>, SocketAddr, usize)>(1024);
+
+    for path in &paths {
+        let path = path.clone();
+        let tx = udp_rx_tx.clone();
+        let log = log.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; UDP_RECV_BUF_SIZE];
+            loop {
+                match path.recv(&mut buf).await {
+                    Ok((n, peer)) => {
+                        if let Err(_) = tx.send((buf[..n].to_vec(), peer, path.id)).await {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        (log.as_ref())(format!("Path #{} recv error: {}", path.id, e));
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
+    }
+
     let mut tick = tokio::time::interval(Duration::from_secs(2));
 
     loop {
@@ -348,7 +421,10 @@ async fn run_client_tun_mode(
                     pkt.encode()
                 };
 
-                let _ = sock.send_to(&wire, server).await;
+                // Send keepalive on ALL paths to maintain NAT mappings and measure RTT
+                for path in &paths {
+                    let _ = path.send(&wire).await;
+                }
                 tx_seq = tx_seq.wrapping_add(1);
 
                 // Handshake: request an assigned VIP until we get one.
@@ -376,7 +452,10 @@ async fn run_client_tun_mode(
                         pkt.encode()
                     };
 
-                    let _ = sock.send_to(&wire, server).await;
+                    // Send HELLO on all paths too
+                    for path in &paths {
+                        let _ = path.send(&wire).await;
+                    }
                     tx_seq = tx_seq.wrapping_add(1);
                 }
 
@@ -414,21 +493,40 @@ async fn run_client_tun_mode(
                     Packet::new(session_id, tx_seq, ip_packet).encode()
                 };
 
-                let _ = sock.send_to(&wire, server).await;
+                // Use Scheduler to decide where to send
+                if let Some(decision) = scheduler.schedule() {
+                    if let Some(path) = paths.iter().find(|p| p.id == decision.primary_path) {
+                        let _ = path.send(&wire).await;
+                    }
+                    for pid in decision.redundant_paths {
+                        if let Some(path) = paths.iter().find(|p| p.id == pid) {
+                            let _ = path.send(&wire).await;
+                        }
+                    }
+                } else {
+                    // Fallback: send on first path if scheduler fails (shouldn't happen if paths exist)
+                    if let Some(path) = paths.first() {
+                        let _ = path.send(&wire).await;
+                    }
+                }
+
                 tx_seq = tx_seq.wrapping_add(1);
             }
 
-            recv = sock.recv_from(&mut udp_buf) => {
-                let (n, peer) = recv.context("failed to receive UDP packet")?;
+            recv = udp_rx_rx.recv() => {
+                let Some((buf, peer, path_id)) = recv else {
+                    break;
+                };
+
                 if peer != server {
                     // Ignore unexpected peers for now.
                     continue;
                 }
 
-                let pkt = match Packet::decode(&udp_buf[..n]) {
+                let pkt = match Packet::decode(&buf) {
                     Ok(p) => p,
                     Err(e) => {
-                        (log.as_ref())(format!("Recv {n} bytes from {peer}: invalid protocol packet: {e}"));
+                        (log.as_ref())(format!("Recv bytes from {peer} on path {path_id}: invalid protocol packet: {e}"));
                         continue;
                     }
                 };
@@ -437,7 +535,7 @@ async fn run_client_tun_mode(
                     match crypto.open_packet(NONCE_DOMAIN_SERVER_TO_CLIENT, &pkt) {
                         Ok(p) => p,
                         Err(e) => {
-                            (log.as_ref())(format!("Recv pkt from {peer}: decrypt failed: {e}"));
+                            (log.as_ref())(format!("Recv pkt from {peer} on path {path_id}: decrypt failed: {e}"));
                             continue;
                         }
                     }
@@ -486,8 +584,15 @@ async fn run_client_tun_mode(
                     continue;
                 }
 
-                if let Err(_e) = net_to_tun_tx.try_send(payload) {
-                    dropped_net_to_tun = dropped_net_to_tun.wrapping_add(1);
+                if let Err(_e) = reorder.insert(pkt.header.sequence, payload) {
+                    // (log.as_ref())(format!("Reorder drop seq={}: {}", pkt.header.sequence, _e));
+                    continue;
+                }
+
+                for (_seq, data) in reorder.retrieve() {
+                    if let Err(_e) = net_to_tun_tx.try_send(data) {
+                        dropped_net_to_tun = dropped_net_to_tun.wrapping_add(1);
+                    }
                 }
             }
 

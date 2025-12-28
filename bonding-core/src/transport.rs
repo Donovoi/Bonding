@@ -45,6 +45,7 @@ pub enum TransportError {
 }
 
 /// Transport path (UDP socket bound to specific interface)
+#[derive(Clone)]
 pub struct TransportPath {
     /// Path identifier
     pub id: usize,

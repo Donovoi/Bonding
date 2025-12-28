@@ -300,11 +300,114 @@ pub struct InterfaceDiscovery;
 
 impl InterfaceDiscovery {
     /// Discover all network interfaces
-    ///
-    /// This is a placeholder that will need platform-specific implementation.
+    #[cfg(target_os = "windows")]
     pub fn discover() -> Vec<NetworkInterface> {
-        // TODO: Implement actual interface discovery
-        // On Windows: Use GetAdaptersAddresses
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS};
+        use windows::Win32::NetworkManagement::IpHelper::{
+            GetAdaptersAddresses, GAA_FLAG_INCLUDE_PREFIX, GAA_FLAG_SKIP_ANYCAST,
+            GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, IF_TYPE_ETHERNET_CSMACD,
+            IF_TYPE_IEEE80211, IF_TYPE_SOFTWARE_LOOPBACK, IP_ADAPTER_ADDRESSES_LH,
+        };
+        use windows::Win32::Networking::WinSock::{
+            AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN, SOCKADDR_IN6,
+        };
+
+        let mut out_buf_len = 15000;
+        let mut out_buf = vec![0u8; out_buf_len as usize];
+        let flags = GAA_FLAG_INCLUDE_PREFIX
+            | GAA_FLAG_SKIP_ANYCAST
+            | GAA_FLAG_SKIP_MULTICAST
+            | GAA_FLAG_SKIP_DNS_SERVER;
+
+        // Initial call to get buffer size
+        let mut ret = unsafe {
+            GetAdaptersAddresses(
+                AF_UNSPEC.0 as u32,
+                flags,
+                None,
+                Some(out_buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
+                &mut out_buf_len,
+            )
+        };
+
+        if ret == ERROR_BUFFER_OVERFLOW.0 {
+            out_buf = vec![0u8; out_buf_len as usize];
+            ret = unsafe {
+                GetAdaptersAddresses(
+                    AF_UNSPEC.0 as u32,
+                    flags,
+                    None,
+                    Some(out_buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
+                    &mut out_buf_len,
+                )
+            };
+        }
+
+        if ret != ERROR_SUCCESS.0 {
+            return Vec::new();
+        }
+
+        let mut interfaces = Vec::new();
+        let mut adapter = out_buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+
+        while !adapter.is_null() {
+            unsafe {
+                let name = (*adapter).FriendlyName.to_string().unwrap_or_default();
+                let index = (*adapter).Anonymous1.Anonymous.IfIndex;
+                let if_type_raw = (*adapter).IfType;
+                let oper_status = (*adapter).OperStatus;
+
+                let if_type = match if_type_raw {
+                    IF_TYPE_ETHERNET_CSMACD => InterfaceType::Ethernet,
+                    IF_TYPE_IEEE80211 => InterfaceType::Wifi,
+                    IF_TYPE_SOFTWARE_LOOPBACK => InterfaceType::Loopback,
+                    _ => InterfaceType::Other,
+                };
+
+                // IfOperStatusUp = 1
+                let is_up = oper_status.0 == 1;
+
+                let mut addresses = Vec::new();
+                let mut unicast = (*adapter).FirstUnicastAddress;
+                while !unicast.is_null() {
+                    let socket_address = (*unicast).Address;
+                    let sockaddr = socket_address.lpSockaddr;
+
+                    if !sockaddr.is_null() {
+                        let family = (*sockaddr).sa_family;
+                        if family == AF_INET {
+                            let ipv4 = &*(sockaddr as *const SOCKADDR_IN);
+                            let ip_bytes = ipv4.sin_addr.S_un.S_addr.to_ne_bytes();
+                            addresses.push(IpAddr::V4(Ipv4Addr::from(ip_bytes)));
+                        } else if family == AF_INET6 {
+                            let ipv6 = &*(sockaddr as *const SOCKADDR_IN6);
+                            let ip_bytes = ipv6.sin6_addr.u.Byte;
+                            addresses.push(IpAddr::V6(Ipv6Addr::from(ip_bytes)));
+                        }
+                    }
+                    unicast = (*unicast).Next;
+                }
+
+                interfaces.push(NetworkInterface {
+                    name,
+                    index,
+                    addresses,
+                    is_up,
+                    if_type,
+                });
+
+                adapter = (*adapter).Next;
+            }
+        }
+
+        interfaces
+    }
+
+    /// Discover all network interfaces (Linux/Other stub)
+    #[cfg(not(target_os = "windows"))]
+    pub fn discover() -> Vec<NetworkInterface> {
+        // TODO: Implement actual interface discovery for Linux
         // On Linux: Parse /sys/class/net or use netlink
         Vec::new()
     }
