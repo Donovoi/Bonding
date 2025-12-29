@@ -19,5 +19,8 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 
+[dev-dependencies]
+bonding-server = { path = "../bonding-server" }
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }

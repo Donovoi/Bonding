@@ -1,26 +1,7 @@
 use anyhow::Result;
 use base64::Engine;
 use bonding_core::transport::PacketCrypto;
-
-mod cli;
-mod config;
-mod runtime;
-mod ui;
-
-#[cfg(target_os = "linux")]
-mod linux_tun_config;
-
-#[cfg(target_os = "linux")]
-mod linux_nat_config;
-
-#[cfg(target_os = "windows")]
-mod wintun_loader;
-
-#[cfg(target_os = "windows")]
-mod windows_tun_config;
-
-#[cfg(target_os = "windows")]
-mod windows_nat_config;
+use bonding_server::{cli, config, runtime, ui};
 
 #[tokio::main]
 async fn main() -> Result<()> {
