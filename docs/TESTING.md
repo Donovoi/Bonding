@@ -7,7 +7,7 @@ This document describes the testing strategy and how to run tests for the Bondin
 Tests are organized into three categories:
 
 1. **Unit Tests**: Located in each module's source file
-2. **Integration Tests**: To be added in `tests/` directory
+2. **Integration Tests**: Located in `bonding-client/tests/` (verifies client-server interaction)
 3. **Documentation Tests**: Examples in rustdoc comments
 
 ## Running Tests
@@ -24,6 +24,14 @@ cargo test --all
 cargo test -p bonding-core
 cargo test -p bonding-client
 cargo test -p bonding-server
+```
+
+### Integration Tests
+
+The integration tests verify the handshake and packet exchange between the client and server without requiring a TUN interface (using loopback UDP).
+
+```bash
+cargo test -p bonding-client --test integration_test
 ```
 
 ### Specific Module
@@ -113,55 +121,16 @@ cargo test --release
 - ✅ Session manager operations
 - ✅ Interface discovery (placeholder)
 
+### Integration Tests (`bonding-client/tests/integration_test.rs`)
+
+- ✅ Client-Server Handshake (No TUN): Verifies UDP connectivity, encryption handshake, and keepalive exchange over loopback.
+
 ## Test Statistics
 
 ```
-Total Tests: ~35 passing
-Coverage: Core logic modules + client infrastructure
-Lines of Test Code: ~500
-```
-
-## Integration Tests (To Be Added)
-
-### Client-Server Tunnel
-
-```rust
-#[tokio::test]
-async fn test_loopback_tunnel() {
-    // Create client and server
-    // Send packets through tunnel
-    // Verify packets arrive correctly
-}
-```
-
-### Out-of-Order Handling
-
-```rust
-#[tokio::test]
-async fn test_packet_reordering_end_to_end() {
-    // Send packets out of order
-    // Verify receiver reorders correctly
-}
-```
-
-### Path Failover
-
-```rust
-#[tokio::test]
-async fn test_path_failure() {
-    // Disable one path
-    // Verify traffic continues on other paths
-}
-```
-
-### Packet Loss Recovery
-
-```rust
-#[tokio::test]
-async fn test_packet_loss() {
-    // Simulate packet loss
-    // Verify retransmission works
-}
+Total Tests: ~40 passing
+Coverage: Core logic modules + client infrastructure + integration
+Lines of Test Code: ~600
 ```
 
 ## Benchmarks (To Be Added)
