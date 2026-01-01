@@ -1,7 +1,7 @@
 use anyhow::Result;
 use base64::Engine;
-use bonding_core::transport::PacketCrypto;
 use bonding_client::{cli, config, runtime, ui};
+use bonding_core::transport::PacketCrypto;
 
 #[tokio::main]
 async fn main() -> Result<()> {

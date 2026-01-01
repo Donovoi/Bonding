@@ -20,7 +20,12 @@ async fn test_client_server_handshake_no_tun() -> Result<()> {
 
     // 2. Configure Server
     // Use a fixed port or simple random logic since fastrand isn't a direct dependency
-    let server_port = 50000 + (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos() as u16 % 1000);
+    let server_port = 50000
+        + (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos() as u16
+            % 1000);
     let server_config = ServerConfig {
         listen_addr: "127.0.0.1".to_string(),
         listen_port: server_port,

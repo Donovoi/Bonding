@@ -93,7 +93,8 @@ impl SessionState {
     }
 
     fn prune_peers(&mut self, ttl: Duration, now: Instant) {
-        self.peers.retain(|_, last_seen| now.duration_since(*last_seen) < ttl);
+        self.peers
+            .retain(|_, last_seen| now.duration_since(*last_seen) < ttl);
     }
 
     fn best_peer(&self) -> Option<SocketAddr> {
@@ -550,7 +551,7 @@ async fn run_server_tun_mode_windows(
 
             _ = keepalive_tick.tick() => {
                 let flags_raw = PacketFlags::ACK_ONLY;
-                
+
                 for (sid, state) in &sessions {
                     // Send keepalive to ALL active peers to maintain NAT mappings
                     for (peer, _) in &state.peers {
@@ -570,7 +571,7 @@ async fn run_server_tun_mode_windows(
                             pkt.header.flags = PacketFlags::from_raw(flags_raw);
                             pkt.encode()
                         };
-                        
+
                         let _ = sock.send_to(&wire, *peer).await;
                     }
                     tx_seq = tx_seq.wrapping_add(1);
@@ -603,7 +604,7 @@ async fn run_server_tun_mode_windows(
 
                 let now = Instant::now();
                 let session_id = pkt.header.session_id;
-                
+
                 sessions.entry(session_id)
                     .and_modify(|s| s.update(peer, now))
                     .or_insert_with(|| SessionState::new(peer, now));
@@ -739,7 +740,7 @@ async fn run_server_tun_mode_windows(
                     if let Err(_e) = state.reorder.insert(pkt.header.sequence, payload) {
                         continue;
                     }
-                    
+
                     for (_seq, data) in state.reorder.retrieve() {
                         if let Err(_e) = net_to_tun_tx.try_send(data) {
                             dropped_net_to_tun = dropped_net_to_tun.wrapping_add(1);
@@ -767,12 +768,12 @@ async fn run_server_tun_mode_windows(
                 }
 
                 let Some(session_id) = target_session else { continue; };
-                
+
                 let mut target_peer = None;
                 if let Some(state) = sessions.get(&session_id) {
                     target_peer = state.best_peer();
                 }
-                
+
                 let Some(peer) = target_peer else { continue; };
 
                 let wire = if let Some(ref crypto) = crypto {
@@ -965,7 +966,7 @@ async fn run_server_tun_mode(
 
             _ = keepalive_tick.tick() => {
                 let flags_raw = PacketFlags::ACK_ONLY;
-                
+
                 for (sid, state) in &sessions {
                     // Send keepalive to ALL active peers to maintain NAT mappings
                     for (peer, _) in &state.peers {
@@ -985,7 +986,7 @@ async fn run_server_tun_mode(
                             pkt.header.flags = PacketFlags::from_raw(flags_raw);
                             pkt.encode()
                         };
-                        
+
                         let _ = sock.send_to(&wire, *peer).await;
                     }
                     tx_seq = tx_seq.wrapping_add(1);
@@ -1018,7 +1019,7 @@ async fn run_server_tun_mode(
 
                 let now = Instant::now();
                 let session_id = pkt.header.session_id;
-                
+
                 sessions.entry(session_id)
                     .and_modify(|s| s.update(peer, now))
                     .or_insert_with(|| SessionState::new(peer, now));
@@ -1156,7 +1157,7 @@ async fn run_server_tun_mode(
                     if let Err(_e) = state.reorder.insert(pkt.header.sequence, payload) {
                         continue;
                     }
-                    
+
                     for (_seq, data) in state.reorder.retrieve() {
                         dev.send(&data).await.context("failed to write packet to TUN")?;
                     }
@@ -1185,12 +1186,12 @@ async fn run_server_tun_mode(
                 }
 
                 let Some(session_id) = target_session else { continue; };
-                
+
                 let mut target_peer = None;
                 if let Some(state) = sessions.get(&session_id) {
                     target_peer = state.best_peer();
                 }
-                
+
                 let Some(peer) = target_peer else { continue; };
 
                 let wire = if let Some(ref crypto) = crypto {
