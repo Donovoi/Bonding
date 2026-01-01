@@ -54,6 +54,9 @@ humantime-serde = "1.1"
 thiserror = "1.0"
 anyhow = "1.0"
 
+# Time utilities
+chrono = "0.4"
+
 # Windows-specific
 windows = { version = "0.58", features = [
     "Win32_Foundation",

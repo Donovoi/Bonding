@@ -78,8 +78,8 @@ pub async fn run_client(
     // Let's move it inside the enable_tun block or make it optional.
     // Actually, the original code had it outside.
     // Let's remove the unconditional check for non-TUN mode.
-    
-    /* 
+
+    /*
     #[cfg(target_os = "windows")]
     {
         match wintun_loader::ensure_wintun_dll() {
