@@ -132,12 +132,12 @@ impl ReorderBuffer {
         // Check if the earliest buffered packet has been waiting too long.
         // If so, skip the missing packets before it.
         if let Some((&first_seq, first_packet)) = self.buffer.iter().next() {
-            if first_seq > self.next_expected {
-                if now.duration_since(first_packet.received_at) > self.max_age {
-                    // We've waited long enough for the gap to fill.
-                    // Skip missing packets and start from this one.
-                    self.next_expected = first_seq;
-                }
+            if first_seq > self.next_expected
+                && now.duration_since(first_packet.received_at) > self.max_age
+            {
+                // We've waited long enough for the gap to fill.
+                // Skip missing packets and start from this one.
+                self.next_expected = first_seq;
             }
         }
 
