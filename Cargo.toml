@@ -1,5 +1,5 @@
 [workspace]
-members = ["bonding-core", "bonding-client", "bonding-server"]
+members = ["bonding-core", "bonding-client", "bonding-server", "bonding"]
 resolver = "2"
 
 [workspace.package]

@@ -157,6 +157,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bonding"
+version = "0.1.7"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bonding-client",
+ "bonding-core",
+ "bonding-server",
+ "clap",
+ "crossterm",
+ "ratatui",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "bonding-client"
 version = "0.1.7"
 dependencies = [
