@@ -1,0 +1,28 @@
+[package]
+name = "bonding"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Combined Bonding client and server binary"
+
+[[bin]]
+name = "bonding"
+path = "src/main.rs"
+
+[dependencies]
+bonding-core = { path = "../bonding-core" }
+bonding-client = { path = "../bonding-client" }
+bonding-server = { path = "../bonding-server" }
+tokio = { workspace = true }
+clap = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
