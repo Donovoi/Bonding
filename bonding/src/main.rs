@@ -170,7 +170,10 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn run_client_mode(config_override: Option<PathBuf>, subcommand: Option<ClientCommand>) -> Result<()> {
+async fn run_client_mode(
+    config_override: Option<PathBuf>,
+    subcommand: Option<ClientCommand>,
+) -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let config_path = match config_override {
@@ -197,7 +200,8 @@ async fn run_client_mode(config_override: Option<PathBuf>, subcommand: Option<Cl
         ClientCommand::Run => {
             let cfg = bonding_client::config::load(&config_path)?;
             let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-            bonding_client::runtime::run_client(cfg, stop_rx, Box::new(|m| tracing::info!("{m}"))).await
+            bonding_client::runtime::run_client(cfg, stop_rx, Box::new(|m| tracing::info!("{m}")))
+                .await
         }
         ClientCommand::Ui => {
             let cfg = bonding_client::config::load(&config_path)?;
@@ -206,7 +210,10 @@ async fn run_client_mode(config_override: Option<PathBuf>, subcommand: Option<Cl
     }
 }
 
-async fn run_server_mode(config_override: Option<PathBuf>, subcommand: Option<ServerCommand>) -> Result<()> {
+async fn run_server_mode(
+    config_override: Option<PathBuf>,
+    subcommand: Option<ServerCommand>,
+) -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let config_path = match config_override {
@@ -233,7 +240,8 @@ async fn run_server_mode(config_override: Option<PathBuf>, subcommand: Option<Se
         ServerCommand::Run => {
             let cfg = bonding_server::config::load(&config_path)?;
             let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-            bonding_server::runtime::run_server(cfg, stop_rx, Box::new(|m| tracing::info!("{m}"))).await
+            bonding_server::runtime::run_server(cfg, stop_rx, Box::new(|m| tracing::info!("{m}")))
+                .await
         }
         ServerCommand::Ui => {
             let cfg = bonding_server::config::load(&config_path)?;
@@ -273,8 +281,12 @@ async fn run_mode_selector() -> Result<()> {
                             execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 
                             return match mode {
-                                Mode::Client => run_client_mode(None, Some(ClientCommand::Ui)).await,
-                                Mode::Server => run_server_mode(None, Some(ServerCommand::Ui)).await,
+                                Mode::Client => {
+                                    run_client_mode(None, Some(ClientCommand::Ui)).await
+                                }
+                                Mode::Server => {
+                                    run_server_mode(None, Some(ServerCommand::Ui)).await
+                                }
                             };
                         }
                     }
@@ -337,7 +349,12 @@ fn draw_mode_selector(f: &mut Frame, selector: &mut ModeSelector) {
     let title = Paragraph::new(vec![
         Line::from(vec![
             Span::styled("Multi-Path ", Style::default().fg(Color::White)),
-            Span::styled("Network Bonding", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Network Bonding",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -357,10 +374,7 @@ fn draw_mode_selector(f: &mut Frame, selector: &mut ModeSelector) {
                 Mode::Client => "󰒍 ",
                 Mode::Server => "󰒋 ",
             };
-            ListItem::new(Line::from(vec![
-                Span::raw(icon),
-                Span::raw(mode.name()),
-            ]))
+            ListItem::new(Line::from(vec![Span::raw(icon), Span::raw(mode.name())]))
         })
         .collect();
 
