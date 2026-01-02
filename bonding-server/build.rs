@@ -37,17 +37,11 @@ fn main() {
     let mut file = fs::File::create(&gen_file).expect("Failed to create generated file");
 
     if wintun_path.exists() {
-        let path_str = wintun_path
-            .to_str()
-            .expect("Path contains invalid UTF-8")
-            .replace('\\', "\\\\");
+        let path_str = wintun_path.to_str().expect("Path contains invalid UTF-8");
 
         writeln!(
             file,
-            r#"
-/// Embedded wintun DLL bytes (compiled into binary)
-pub const EMBEDDED_WINTUN_DLL: Option<&[u8]> = Some(include_bytes!(r\"{}\"));
-"#,
+            "/// Embedded wintun DLL bytes (compiled into binary)\npub const EMBEDDED_WINTUN_DLL: Option<&[u8]> = Some(include_bytes!(r\"{}\"));",
             path_str
         )
         .expect("Failed to write generated code");
