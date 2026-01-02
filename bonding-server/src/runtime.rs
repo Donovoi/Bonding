@@ -554,7 +554,7 @@ async fn run_server_tun_mode_windows(
 
                 for (sid, state) in &sessions {
                     // Send keepalive to ALL active peers to maintain NAT mappings
-                    for (peer, _) in &state.peers {
+                    for peer in state.peers.keys() {
                         let wire = if let Some(ref crypto) = crypto {
                             crypto
                                 .seal_packet_with_flags(
@@ -969,7 +969,7 @@ async fn run_server_tun_mode(
 
                 for (sid, state) in &sessions {
                     // Send keepalive to ALL active peers to maintain NAT mappings
-                    for (peer, _) in &state.peers {
+                    for peer in state.peers.keys() {
                         let wire = if let Some(ref crypto) = crypto {
                             crypto
                                 .seal_packet_with_flags(

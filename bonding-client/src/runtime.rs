@@ -1,14 +1,20 @@
 use anyhow::{Context, Result};
 use base64::Engine;
-use bonding_core::control::{BondingConfig, InterfaceDiscovery};
+use bonding_core::control::BondingConfig;
+#[cfg(target_os = "windows")]
+use bonding_core::control::InterfaceDiscovery;
 #[cfg(target_os = "windows")]
 use bonding_core::proto::control::{self, ControlMessage};
 use bonding_core::proto::Packet;
 #[cfg(target_os = "windows")]
 use bonding_core::proto::PacketFlags;
+#[cfg(target_os = "windows")]
 use bonding_core::reorder::ReorderBuffer;
+#[cfg(target_os = "windows")]
 use bonding_core::scheduler::{BondingMode, Scheduler};
-use bonding_core::transport::{EncryptionKey, PacketCrypto, TransportPath};
+#[cfg(target_os = "windows")]
+use bonding_core::transport::TransportPath;
+use bonding_core::transport::{EncryptionKey, PacketCrypto};
 #[cfg(target_os = "windows")]
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -397,7 +403,7 @@ async fn run_client_tun_mode(
             loop {
                 match path.recv(&mut buf).await {
                     Ok((n, peer)) => {
-                        if let Err(_) = tx.send((buf[..n].to_vec(), peer, path.id)).await {
+                        if tx.send((buf[..n].to_vec(), peer, path.id)).await.is_err() {
                             break;
                         }
                     }
