@@ -31,7 +31,7 @@ fn set_windows_unicast_if(socket: &Socket, if_index: u32, is_ipv6: bool) -> io::
     use std::mem::size_of_val;
     use std::os::windows::io::AsRawSocket;
     use windows::Win32::Networking::WinSock::{
-        setsockopt, IPPROTO_IP, IPPROTO_IPV6, IPV6_UNICAST_IF, IP_UNICAST_IF,
+        setsockopt, IPPROTO_IP, IPPROTO_IPV6, IPV6_UNICAST_IF, IP_UNICAST_IF, SOCKET,
     };
 
     let raw = socket.as_raw_socket() as usize;
@@ -49,15 +49,11 @@ fn set_windows_unicast_if(socket: &Socket, if_index: u32, is_ipv6: bool) -> io::
         IPPROTO_IP.0
     };
 
-    let ret = unsafe {
-        setsockopt(
-            raw,
-            level,
-            optname,
-            Some((&value as *const u32).cast()),
-            size_of_val(&value) as i32,
-        )
+    let bytes = unsafe {
+        std::slice::from_raw_parts((&value as *const u32).cast::<u8>(), size_of_val(&value))
     };
+
+    let ret = unsafe { setsockopt(SOCKET(raw), level, optname, Some(bytes)) };
 
     if ret == 0 {
         Ok(())
