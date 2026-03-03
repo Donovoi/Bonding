@@ -240,10 +240,8 @@ impl Scheduler {
             _ => {
                 self.current_preferred_path = Some(candidate);
                 self.last_preferred_switch_at = Some(now);
-                self.last_preferred_switch_reason = Some(format!(
-                    "initial selection -> path {}",
-                    candidate
-                ));
+                self.last_preferred_switch_reason =
+                    Some(format!("initial selection -> path {}", candidate));
                 return Some(SchedulerDecision {
                     primary_path: candidate,
                     redundant_paths: Vec::new(),
@@ -483,7 +481,11 @@ mod tests {
     #[test]
     fn test_scheduler_preferred_hysteresis_prevents_fast_switch() {
         let mut scheduler = Scheduler::new(BondingMode::Preferred);
-        scheduler.configure_preferred_hysteresis(0.0, Duration::from_millis(50), Duration::from_millis(0));
+        scheduler.configure_preferred_hysteresis(
+            0.0,
+            Duration::from_millis(50),
+            Duration::from_millis(0),
+        );
         scheduler.add_path(0);
         scheduler.add_path(1);
 
