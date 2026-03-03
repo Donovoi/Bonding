@@ -257,24 +257,36 @@ async fn run_client_tun_mode(
         paths.push(path);
     } else {
         for (i, iface) in interfaces.iter().enumerate() {
-            // Try to bind to the first IPv4 address of the interface
-            if let Some(ip) = iface.addresses.iter().find(|ip| ip.is_ipv4()) {
-                let local_addr = SocketAddr::new(*ip, 0);
-                match TransportPath::new(i, local_addr, server).await {
+            // Prefer a non-loopback IPv4 address to keep path semantics stable.
+            let ipv4 = iface.addresses.iter().find_map(|ip| match ip {
+                std::net::IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_link_local() => {
+                    Some(std::net::IpAddr::V4(*v4))
+                }
+                _ => None,
+            });
+
+            if let Some(ip) = ipv4 {
+                let local_addr = SocketAddr::new(ip, 0);
+                match TransportPath::new_with_interface(i, local_addr, server, Some(iface.index)).await {
                     Ok(path) => {
                         (log.as_ref())(format!(
-                            "Bound path #{} on interface '{}' ({})",
-                            i, iface.name, local_addr
+                            "Bound path #{} on interface '{}' (ifindex={}, local={})",
+                            i, iface.name, iface.index, local_addr
                         ));
                         paths.push(path);
                     }
                     Err(e) => {
                         (log.as_ref())(format!(
-                            "Failed to bind path on interface '{}': {}",
-                            iface.name, e
+                            "Failed to bind path on interface '{}' (ifindex={}): {}",
+                            iface.name, iface.index, e
                         ));
                     }
                 }
+            } else {
+                (log.as_ref())(format!(
+                    "Skipping interface '{}' (ifindex={}): no suitable IPv4 address",
+                    iface.name, iface.index
+                ));
             }
         }
     }
