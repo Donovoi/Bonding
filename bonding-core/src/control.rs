@@ -413,6 +413,55 @@ impl InterfaceDiscovery {
     }
 
     /// Discover interfaces suitable for bonding (active internet connections)
+    #[cfg(target_os = "windows")]
+    pub fn discover_bondable() -> Vec<NetworkInterface> {
+        fn has_usable_ipv4(iface: &NetworkInterface) -> bool {
+            iface.addresses.iter().any(|ip| match ip {
+                std::net::IpAddr::V4(v4) => !v4.is_loopback() && !v4.is_link_local(),
+                _ => false,
+            })
+        }
+
+        fn looks_virtual(name: &str) -> bool {
+            let n = name.to_ascii_lowercase();
+            [
+                "loopback",
+                "wintun",
+                "tailscale",
+                "vpn",
+                "virtual",
+                "vethernet",
+                "hyper-v",
+                "docker",
+                "bluetooth",
+                "npcap",
+            ]
+            .iter()
+            .any(|p| n.contains(p))
+        }
+
+        let mut out: Vec<NetworkInterface> = Self::discover()
+            .into_iter()
+            .filter(|iface| {
+                iface.is_up
+                    && iface.if_type != InterfaceType::Loopback
+                    && has_usable_ipv4(iface)
+                    && !looks_virtual(&iface.name)
+            })
+            .collect();
+
+        // Prefer wired paths first, then Wi-Fi, then others for deterministic ordering.
+        out.sort_by_key(|iface| match iface.if_type {
+            InterfaceType::Ethernet => 0,
+            InterfaceType::Wifi => 1,
+            _ => 2,
+        });
+
+        out
+    }
+
+    /// Discover interfaces suitable for bonding (active internet connections)
+    #[cfg(not(target_os = "windows"))]
     pub fn discover_bondable() -> Vec<NetworkInterface> {
         Self::discover()
             .into_iter()

@@ -22,6 +22,8 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(target_os = "windows")]
+use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
@@ -257,24 +259,38 @@ async fn run_client_tun_mode(
         paths.push(path);
     } else {
         for (i, iface) in interfaces.iter().enumerate() {
-            // Try to bind to the first IPv4 address of the interface
-            if let Some(ip) = iface.addresses.iter().find(|ip| ip.is_ipv4()) {
-                let local_addr = SocketAddr::new(*ip, 0);
-                match TransportPath::new(i, local_addr, server).await {
+            // Prefer a non-loopback IPv4 address to keep path semantics stable.
+            let ipv4 = iface.addresses.iter().find_map(|ip| match ip {
+                std::net::IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_link_local() => {
+                    Some(std::net::IpAddr::V4(*v4))
+                }
+                _ => None,
+            });
+
+            if let Some(ip) = ipv4 {
+                let local_addr = SocketAddr::new(ip, 0);
+                match TransportPath::new_with_interface(i, local_addr, server, Some(iface.index))
+                    .await
+                {
                     Ok(path) => {
                         (log.as_ref())(format!(
-                            "Bound path #{} on interface '{}' ({})",
-                            i, iface.name, local_addr
+                            "Bound path #{} on interface '{}' (ifindex={}, local={})",
+                            i, iface.name, iface.index, local_addr
                         ));
                         paths.push(path);
                     }
                     Err(e) => {
                         (log.as_ref())(format!(
-                            "Failed to bind path on interface '{}': {}",
-                            iface.name, e
+                            "Failed to bind path on interface '{}' (ifindex={}): {}",
+                            iface.name, iface.index, e
                         ));
                     }
                 }
+            } else {
+                (log.as_ref())(format!(
+                    "Skipping interface '{}' (ifindex={}): no suitable IPv4 address",
+                    iface.name, iface.index
+                ));
             }
         }
     }
@@ -294,6 +310,11 @@ async fn run_client_tun_mode(
     for path in &paths {
         scheduler.add_path(path.id);
     }
+    // Anti-flap defaults for preferred mode.
+    scheduler.configure_preferred_hysteresis(0.15, Duration::from_secs(3), Duration::from_secs(1));
+
+    let mut last_scheduler_diag_log = Instant::now();
+    let mut last_logged_primary_path: Option<usize> = None;
 
     // Create/open the adapter up-front so we can auto-configure it before pumping.
     let tun = WintunDevice::new(&cfg.adapter_name).with_context(|| {
@@ -521,6 +542,28 @@ async fn run_client_tun_mode(
                         if let Some(path) = paths.iter().find(|p| p.id == pid) {
                             let _ = path.send(&wire).await;
                         }
+                    }
+
+                    if last_logged_primary_path != Some(decision.primary_path) {
+                        let diag = scheduler.diagnostics();
+                        let reason = diag
+                            .last_switch_reason
+                            .unwrap_or_else(|| "n/a".to_string());
+                        (log.as_ref())(format!(
+                            "Scheduler primary path -> {} (mode={:?}, switches={}, reason={})",
+                            decision.primary_path, diag.mode, diag.switch_count, reason
+                        ));
+                        last_logged_primary_path = Some(decision.primary_path);
+                    } else if last_scheduler_diag_log.elapsed() >= Duration::from_secs(10) {
+                        let diag = scheduler.diagnostics();
+                        let reason = diag
+                            .last_switch_reason
+                            .unwrap_or_else(|| "n/a".to_string());
+                        (log.as_ref())(format!(
+                            "Scheduler status: primary={} mode={:?} switches={} reason={}",
+                            decision.primary_path, diag.mode, diag.switch_count, reason
+                        ));
+                        last_scheduler_diag_log = Instant::now();
                     }
                 } else {
                     // Fallback: send on first path if scheduler fails (shouldn't happen if paths exist)

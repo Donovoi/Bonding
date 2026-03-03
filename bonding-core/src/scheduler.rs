@@ -91,6 +91,15 @@ pub struct SchedulerDecision {
     pub redundant_paths: Vec<PathId>,
 }
 
+/// Runtime diagnostics snapshot for scheduler behavior.
+#[derive(Debug, Clone)]
+pub struct SchedulerDiagnostics {
+    pub mode: BondingMode,
+    pub current_preferred_path: Option<PathId>,
+    pub switch_count: u64,
+    pub last_switch_reason: Option<String>,
+}
+
 /// Packet scheduler
 pub struct Scheduler {
     /// Bonding mode
@@ -101,6 +110,21 @@ pub struct Scheduler {
     stripe_index: usize,
     /// Available path IDs
     paths: Vec<PathId>,
+    /// Current selected preferred path (for hysteresis)
+    current_preferred_path: Option<PathId>,
+    /// Last preferred path switch timestamp
+    last_preferred_switch_at: Option<Instant>,
+    /// Minimum score improvement ratio required to switch preferred path.
+    /// Example: 0.15 means candidate must be >= 15% better.
+    preferred_switch_threshold: f64,
+    /// Minimum time to hold current preferred path before considering a switch.
+    preferred_min_hold: Duration,
+    /// Cooldown after a preferred-path switch before allowing another switch.
+    preferred_switch_cooldown: Duration,
+    /// Number of preferred-path switches since scheduler init.
+    preferred_switch_count: u64,
+    /// Human-readable reason for the last preferred-path switch decision.
+    last_preferred_switch_reason: Option<String>,
 }
 
 impl Scheduler {
@@ -111,6 +135,13 @@ impl Scheduler {
             metrics: HashMap::new(),
             stripe_index: 0,
             paths: Vec::new(),
+            current_preferred_path: None,
+            last_preferred_switch_at: None,
+            preferred_switch_threshold: 0.15,
+            preferred_min_hold: Duration::from_secs(3),
+            preferred_switch_cooldown: Duration::from_secs(1),
+            preferred_switch_count: 0,
+            last_preferred_switch_reason: None,
         }
     }
 
@@ -126,6 +157,11 @@ impl Scheduler {
     pub fn remove_path(&mut self, path_id: PathId) {
         self.paths.retain(|&id| id != path_id);
         self.metrics.remove(&path_id);
+        if self.current_preferred_path == Some(path_id) {
+            self.current_preferred_path = None;
+            self.last_preferred_switch_at = None;
+            self.last_preferred_switch_reason = Some(format!("path {path_id} removed"));
+        }
     }
 
     /// Update metrics for a path
@@ -174,27 +210,100 @@ impl Scheduler {
         })
     }
 
-    /// Schedule using preferred path (best score)
-    fn schedule_preferred(&self) -> Option<SchedulerDecision> {
+    fn score_of(&self, path_id: PathId) -> f64 {
+        self.metrics.get(&path_id).map(|m| m.score()).unwrap_or(0.0)
+    }
+
+    fn best_scored_path(&self) -> Option<PathId> {
+        self.paths
+            .iter()
+            .max_by(|&&a, &&b| {
+                self.score_of(a)
+                    .partial_cmp(&self.score_of(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .copied()
+    }
+
+    /// Schedule using preferred path with anti-flap hysteresis.
+    fn schedule_preferred(&mut self) -> Option<SchedulerDecision> {
         if self.paths.is_empty() {
             return None;
         }
 
-        // Find path with best score
-        let best_path = self
-            .paths
-            .iter()
-            .max_by(|&&a, &&b| {
-                let score_a = self.metrics.get(&a).map(|m| m.score()).unwrap_or(0.0);
-                let score_b = self.metrics.get(&b).map(|m| m.score()).unwrap_or(0.0);
-                score_a
-                    .partial_cmp(&score_b)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .copied()?;
+        let now = Instant::now();
+        let candidate = self.best_scored_path()?;
+
+        // Bootstrap if no current path or current path no longer exists.
+        let current = match self.current_preferred_path {
+            Some(path) if self.paths.contains(&path) => path,
+            _ => {
+                self.current_preferred_path = Some(candidate);
+                self.last_preferred_switch_at = Some(now);
+                self.last_preferred_switch_reason =
+                    Some(format!("initial selection -> path {}", candidate));
+                return Some(SchedulerDecision {
+                    primary_path: candidate,
+                    redundant_paths: Vec::new(),
+                });
+            }
+        };
+
+        if candidate != current {
+            let current_score = self.score_of(current);
+            let candidate_score = self.score_of(candidate);
+
+            // Require candidate to be sufficiently better than current.
+            let required_score = current_score * (1.0 + self.preferred_switch_threshold);
+            let better_enough = candidate_score > required_score;
+
+            // Enforce minimum hold time on current path.
+            let held_long_enough = self
+                .last_preferred_switch_at
+                .map(|t| now.duration_since(t) >= self.preferred_min_hold)
+                .unwrap_or(true);
+
+            // Enforce cooldown between switches.
+            let cooled_down = self
+                .last_preferred_switch_at
+                .map(|t| now.duration_since(t) >= self.preferred_switch_cooldown)
+                .unwrap_or(true);
+
+            if better_enough && held_long_enough && cooled_down {
+                self.current_preferred_path = Some(candidate);
+                self.last_preferred_switch_at = Some(now);
+                self.preferred_switch_count = self.preferred_switch_count.saturating_add(1);
+                self.last_preferred_switch_reason = Some(format!(
+                    "switch {} -> {} (candidate_score={:.3} current_score={:.3} threshold={:.0}%)",
+                    current,
+                    candidate,
+                    candidate_score,
+                    current_score,
+                    self.preferred_switch_threshold * 100.0
+                ));
+            } else {
+                let reason = if !better_enough {
+                    format!(
+                        "hold {}: candidate {} not better enough (cand={:.3} req>{:.3})",
+                        current, candidate, candidate_score, required_score
+                    )
+                } else if !held_long_enough {
+                    format!(
+                        "hold {}: min-hold {:?} not reached",
+                        current, self.preferred_min_hold
+                    )
+                } else {
+                    format!(
+                        "hold {}: cooldown {:?} active",
+                        current, self.preferred_switch_cooldown
+                    )
+                };
+                self.last_preferred_switch_reason = Some(reason);
+            }
+        }
 
         Some(SchedulerDecision {
-            primary_path: best_path,
+            primary_path: self.current_preferred_path.unwrap_or(candidate),
             redundant_paths: Vec::new(),
         })
     }
@@ -206,17 +315,7 @@ impl Scheduler {
         }
 
         // Use best path as primary, others as redundant
-        let best_path = self
-            .paths
-            .iter()
-            .max_by(|&&a, &&b| {
-                let score_a = self.metrics.get(&a).map(|m| m.score()).unwrap_or(0.0);
-                let score_b = self.metrics.get(&b).map(|m| m.score()).unwrap_or(0.0);
-                score_a
-                    .partial_cmp(&score_b)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .copied()?;
+        let best_path = self.best_scored_path()?;
 
         let redundant_paths: Vec<PathId> = self
             .paths
@@ -239,6 +338,32 @@ impl Scheduler {
     /// Set the bonding mode
     pub fn set_mode(&mut self, mode: BondingMode) {
         self.mode = mode;
+    }
+
+    /// Configure hysteresis used by Preferred mode.
+    ///
+    /// - `switch_threshold_ratio`: required relative improvement to switch paths (e.g. 0.15 = 15%)
+    /// - `min_hold`: minimum time to stay on current path before switching
+    /// - `cooldown`: minimum time between switches
+    pub fn configure_preferred_hysteresis(
+        &mut self,
+        switch_threshold_ratio: f64,
+        min_hold: Duration,
+        cooldown: Duration,
+    ) {
+        self.preferred_switch_threshold = switch_threshold_ratio.max(0.0);
+        self.preferred_min_hold = min_hold;
+        self.preferred_switch_cooldown = cooldown;
+    }
+
+    /// Return a diagnostics snapshot for UI/logging.
+    pub fn diagnostics(&self) -> SchedulerDiagnostics {
+        SchedulerDiagnostics {
+            mode: self.mode,
+            current_preferred_path: self.current_preferred_path,
+            switch_count: self.preferred_switch_count,
+            last_switch_reason: self.last_preferred_switch_reason.clone(),
+        }
     }
 
     /// Get the number of active paths
@@ -351,6 +476,55 @@ mod tests {
     fn test_scheduler_no_paths() {
         let mut scheduler = Scheduler::new(BondingMode::Stripe);
         assert!(scheduler.schedule().is_none());
+    }
+
+    #[test]
+    fn test_scheduler_preferred_hysteresis_prevents_fast_switch() {
+        let mut scheduler = Scheduler::new(BondingMode::Preferred);
+        scheduler.configure_preferred_hysteresis(
+            0.0,
+            Duration::from_millis(50),
+            Duration::from_millis(0),
+        );
+        scheduler.add_path(0);
+        scheduler.add_path(1);
+
+        // Start with path 0 as better.
+        scheduler.update_metrics(
+            0,
+            PathMetrics {
+                rtt: Duration::from_millis(10),
+                loss_rate: 0.0,
+                ..Default::default()
+            },
+        );
+        scheduler.update_metrics(
+            1,
+            PathMetrics {
+                rtt: Duration::from_millis(100),
+                loss_rate: 0.2,
+                ..Default::default()
+            },
+        );
+
+        let d1 = scheduler.schedule().unwrap();
+        assert_eq!(d1.primary_path, 0);
+
+        // Make path 1 better immediately; should NOT switch due to min_hold.
+        scheduler.update_metrics(
+            1,
+            PathMetrics {
+                rtt: Duration::from_millis(5),
+                loss_rate: 0.0,
+                ..Default::default()
+            },
+        );
+        let d2 = scheduler.schedule().unwrap();
+        assert_eq!(d2.primary_path, 0);
+
+        std::thread::sleep(Duration::from_millis(60));
+        let d3 = scheduler.schedule().unwrap();
+        assert_eq!(d3.primary_path, 1);
     }
 
     #[test]
