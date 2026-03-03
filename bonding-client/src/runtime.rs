@@ -22,7 +22,9 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "windows")]
+use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
 
@@ -267,7 +269,9 @@ async fn run_client_tun_mode(
 
             if let Some(ip) = ipv4 {
                 let local_addr = SocketAddr::new(ip, 0);
-                match TransportPath::new_with_interface(i, local_addr, server, Some(iface.index)).await {
+                match TransportPath::new_with_interface(i, local_addr, server, Some(iface.index))
+                    .await
+                {
                     Ok(path) => {
                         (log.as_ref())(format!(
                             "Bound path #{} on interface '{}' (ifindex={}, local={})",
@@ -307,11 +311,7 @@ async fn run_client_tun_mode(
         scheduler.add_path(path.id);
     }
     // Anti-flap defaults for preferred mode.
-    scheduler.configure_preferred_hysteresis(
-        0.15,
-        Duration::from_secs(3),
-        Duration::from_secs(1),
-    );
+    scheduler.configure_preferred_hysteresis(0.15, Duration::from_secs(3), Duration::from_secs(1));
 
     let mut last_scheduler_diag_log = Instant::now();
     let mut last_logged_primary_path: Option<usize> = None;

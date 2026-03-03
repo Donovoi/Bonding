@@ -9,11 +9,11 @@ use chacha20poly1305::{
     aead::{Aead, AeadInPlace, KeyInit, OsRng},
     ChaCha20Poly1305, Key, Nonce,
 };
+use socket2::{Domain, Protocol, Socket, Type};
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::proto::{Packet, PacketFlags, AUTH_TAG_SIZE};
 
@@ -38,8 +38,16 @@ fn set_windows_unicast_if(socket: &Socket, if_index: u32, is_ipv6: bool) -> io::
 
     // For IPv4 Windows expects network byte-order for IP_UNICAST_IF.
     let value = if is_ipv6 { if_index } else { if_index.to_be() };
-    let optname = if is_ipv6 { IPV6_UNICAST_IF } else { IP_UNICAST_IF };
-    let level = if is_ipv6 { IPPROTO_IPV6.0 } else { IPPROTO_IP.0 };
+    let optname = if is_ipv6 {
+        IPV6_UNICAST_IF
+    } else {
+        IP_UNICAST_IF
+    };
+    let level = if is_ipv6 {
+        IPPROTO_IPV6.0
+    } else {
+        IPPROTO_IP.0
+    };
 
     let ret = unsafe {
         setsockopt(
@@ -104,7 +112,14 @@ impl TransportPath {
         peer_addr: SocketAddr,
         interface_index: Option<u32>,
     ) -> io::Result<Self> {
-        let domain = if local_addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+        #[cfg(not(target_os = "windows"))]
+        let _ = interface_index;
+
+        let domain = if local_addr.is_ipv4() {
+            Domain::IPV4
+        } else {
+            Domain::IPV6
+        };
         let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
         socket.set_nonblocking(true)?;
 
