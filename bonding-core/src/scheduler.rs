@@ -91,6 +91,15 @@ pub struct SchedulerDecision {
     pub redundant_paths: Vec<PathId>,
 }
 
+/// Runtime diagnostics snapshot for scheduler behavior.
+#[derive(Debug, Clone)]
+pub struct SchedulerDiagnostics {
+    pub mode: BondingMode,
+    pub current_preferred_path: Option<PathId>,
+    pub switch_count: u64,
+    pub last_switch_reason: Option<String>,
+}
+
 /// Packet scheduler
 pub struct Scheduler {
     /// Bonding mode
@@ -112,6 +121,10 @@ pub struct Scheduler {
     preferred_min_hold: Duration,
     /// Cooldown after a preferred-path switch before allowing another switch.
     preferred_switch_cooldown: Duration,
+    /// Number of preferred-path switches since scheduler init.
+    preferred_switch_count: u64,
+    /// Human-readable reason for the last preferred-path switch decision.
+    last_preferred_switch_reason: Option<String>,
 }
 
 impl Scheduler {
@@ -127,6 +140,8 @@ impl Scheduler {
             preferred_switch_threshold: 0.15,
             preferred_min_hold: Duration::from_secs(3),
             preferred_switch_cooldown: Duration::from_secs(1),
+            preferred_switch_count: 0,
+            last_preferred_switch_reason: None,
         }
     }
 
@@ -145,6 +160,7 @@ impl Scheduler {
         if self.current_preferred_path == Some(path_id) {
             self.current_preferred_path = None;
             self.last_preferred_switch_at = None;
+            self.last_preferred_switch_reason = Some(format!("path {path_id} removed"));
         }
     }
 
@@ -224,6 +240,10 @@ impl Scheduler {
             _ => {
                 self.current_preferred_path = Some(candidate);
                 self.last_preferred_switch_at = Some(now);
+                self.last_preferred_switch_reason = Some(format!(
+                    "initial selection -> path {}",
+                    candidate
+                ));
                 return Some(SchedulerDecision {
                     primary_path: candidate,
                     redundant_paths: Vec::new(),
@@ -254,6 +274,33 @@ impl Scheduler {
             if better_enough && held_long_enough && cooled_down {
                 self.current_preferred_path = Some(candidate);
                 self.last_preferred_switch_at = Some(now);
+                self.preferred_switch_count = self.preferred_switch_count.saturating_add(1);
+                self.last_preferred_switch_reason = Some(format!(
+                    "switch {} -> {} (candidate_score={:.3} current_score={:.3} threshold={:.0}%)",
+                    current,
+                    candidate,
+                    candidate_score,
+                    current_score,
+                    self.preferred_switch_threshold * 100.0
+                ));
+            } else {
+                let reason = if !better_enough {
+                    format!(
+                        "hold {}: candidate {} not better enough (cand={:.3} req>{:.3})",
+                        current, candidate, candidate_score, required_score
+                    )
+                } else if !held_long_enough {
+                    format!(
+                        "hold {}: min-hold {:?} not reached",
+                        current, self.preferred_min_hold
+                    )
+                } else {
+                    format!(
+                        "hold {}: cooldown {:?} active",
+                        current, self.preferred_switch_cooldown
+                    )
+                };
+                self.last_preferred_switch_reason = Some(reason);
             }
         }
 
@@ -309,6 +356,16 @@ impl Scheduler {
         self.preferred_switch_threshold = switch_threshold_ratio.max(0.0);
         self.preferred_min_hold = min_hold;
         self.preferred_switch_cooldown = cooldown;
+    }
+
+    /// Return a diagnostics snapshot for UI/logging.
+    pub fn diagnostics(&self) -> SchedulerDiagnostics {
+        SchedulerDiagnostics {
+            mode: self.mode,
+            current_preferred_path: self.current_preferred_path,
+            switch_count: self.preferred_switch_count,
+            last_switch_reason: self.last_preferred_switch_reason.clone(),
+        }
     }
 
     /// Get the number of active paths
