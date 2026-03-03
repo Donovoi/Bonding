@@ -13,6 +13,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
+use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::proto::{Packet, PacketFlags, AUTH_TAG_SIZE};
 
@@ -24,6 +25,38 @@ const NONCE_SIZE: usize = 12;
 
 /// Transport encryption key
 pub type EncryptionKey = [u8; KEY_SIZE];
+
+#[cfg(target_os = "windows")]
+fn set_windows_unicast_if(socket: &Socket, if_index: u32, is_ipv6: bool) -> io::Result<()> {
+    use std::mem::size_of_val;
+    use std::os::windows::io::AsRawSocket;
+    use windows::Win32::Networking::WinSock::{
+        setsockopt, IPPROTO_IP, IPPROTO_IPV6, IPV6_UNICAST_IF, IP_UNICAST_IF,
+    };
+
+    let raw = socket.as_raw_socket() as usize;
+
+    // For IPv4 Windows expects network byte-order for IP_UNICAST_IF.
+    let value = if is_ipv6 { if_index } else { if_index.to_be() };
+    let optname = if is_ipv6 { IPV6_UNICAST_IF } else { IP_UNICAST_IF };
+    let level = if is_ipv6 { IPPROTO_IPV6.0 } else { IPPROTO_IP.0 };
+
+    let ret = unsafe {
+        setsockopt(
+            raw,
+            level,
+            optname,
+            Some((&value as *const u32).cast()),
+            size_of_val(&value) as i32,
+        )
+    };
+
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
 
 /// Transport errors
 #[derive(Debug, thiserror::Error)]
@@ -58,10 +91,37 @@ pub struct TransportPath {
 impl TransportPath {
     /// Create a new transport path
     pub async fn new(id: usize, local_addr: SocketAddr, peer_addr: SocketAddr) -> io::Result<Self> {
-        let socket = UdpSocket::bind(local_addr).await?;
+        Self::new_with_interface(id, local_addr, peer_addr, None).await
+    }
+
+    /// Create a new transport path, optionally pinning egress to a specific interface index.
+    ///
+    /// On Windows this applies IP_UNICAST_IF/IPV6_UNICAST_IF (best-effort) so routing
+    /// stays on the intended adapter when multiple links are active.
+    pub async fn new_with_interface(
+        id: usize,
+        local_addr: SocketAddr,
+        peer_addr: SocketAddr,
+        interface_index: Option<u32>,
+    ) -> io::Result<Self> {
+        let domain = if local_addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+        let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_nonblocking(true)?;
+
+        #[cfg(target_os = "windows")]
+        if let Some(if_index) = interface_index {
+            // Best-effort egress pinning for Windows.
+            let _ = set_windows_unicast_if(&socket, if_index, local_addr.is_ipv6());
+        }
+
+        socket.bind(&local_addr.into())?;
+
+        let std_sock: std::net::UdpSocket = socket.into();
+        let tokio_sock = UdpSocket::from_std(std_sock)?;
+
         Ok(Self {
             id,
-            socket: Arc::new(socket),
+            socket: Arc::new(tokio_sock),
             peer_addr,
         })
     }
