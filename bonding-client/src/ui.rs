@@ -122,9 +122,10 @@ impl UiState {
     }
 }
 
-pub async fn run(config_path: PathBuf, config: BondingConfig) -> Result<()> {
+pub async fn run(config_path: PathBuf, config: BondingConfig, config_created: bool) -> Result<()> {
     let handle = Handle::current();
 
+    let config_path_display = config_path.display().to_string();
     let state = Arc::new(Mutex::new(UiState {
         config_path,
         config: config.clone(),
@@ -137,6 +138,13 @@ pub async fn run(config_path: PathBuf, config: BondingConfig) -> Result<()> {
     {
         let mut s = state.lock().unwrap();
         s.push_log("Welcome to Bonding Client");
+        if config_created {
+            s.push_log(format!(
+                "No config found — created default config at {}",
+                config_path_display
+            ));
+            s.push_log("Edit the config file, then press 'r' to reload it");
+        }
         s.push_log("Press 's' to start/stop, 'r' to reload config, 'q' to quit");
         s.push_log("Use ↑/↓ or Page Up/Down to scroll logs");
     }

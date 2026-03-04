@@ -43,8 +43,9 @@ async fn main() -> Result<()> {
             runtime::run_client(cfg, stop_rx, Box::new(|m| tracing::info!("{m}"))).await
         }
         cli::Command::Ui => {
+            let config_created = config::create_default(&config_path)?;
             let cfg = config::load(&config_path)?;
-            ui::run(config_path, cfg).await
+            ui::run(config_path, cfg, config_created).await
         }
     }
 }

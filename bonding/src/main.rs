@@ -204,8 +204,9 @@ async fn run_client_mode(
                 .await
         }
         ClientCommand::Ui => {
+            let config_created = bonding_client::config::create_default(&config_path)?;
             let cfg = bonding_client::config::load(&config_path)?;
-            bonding_client::ui::run(config_path, cfg).await
+            bonding_client::ui::run(config_path, cfg, config_created).await
         }
     }
 }
@@ -244,8 +245,9 @@ async fn run_server_mode(
                 .await
         }
         ServerCommand::Ui => {
+            let config_created = bonding_server::config::create_default(&config_path)?;
             let cfg = bonding_server::config::load(&config_path)?;
-            bonding_server::ui::run(config_path, cfg).await
+            bonding_server::ui::run(config_path, cfg, config_created).await
         }
     }
 }
