@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
+use base64::Engine;
 use bonding_core::control::BondingConfig;
+use bonding_core::transport::PacketCrypto;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -44,4 +46,20 @@ pub fn save(path: &Path, cfg: &BondingConfig, overwrite: bool) -> Result<()> {
     let raw = toml::to_string_pretty(cfg).context("failed to serialize config to TOML")?;
     fs::write(path, raw).with_context(|| format!("failed to write config: {}", path.display()))?;
     Ok(())
+}
+
+/// Write a default config to `path` (generating an encryption key when encryption is enabled).
+/// This is a no-op if the file already exists; returns `true` when the file was created.
+pub fn create_default(path: &Path) -> Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+    let mut cfg = BondingConfig::default();
+    if cfg.enable_encryption {
+        let key = PacketCrypto::generate_key();
+        cfg.encryption_key_b64 =
+            Some(base64::engine::general_purpose::STANDARD.encode(key));
+    }
+    save(path, &cfg, false)?;
+    Ok(true)
 }
