@@ -1,15 +1,16 @@
 use anyhow::{Context, Result};
 use bonding_core::control::ServerConfig;
-use directories::ProjectDirs;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const CONFIG_FILE_NAME: &str = "bonding-server.toml";
 
 pub fn default_config_path() -> Result<PathBuf> {
-    let proj = ProjectDirs::from("io", "Donovoi", "Bonding")
-        .context("could not determine platform config directory")?;
-    let dir = proj.config_dir();
+    // Keep config next to the executable for portable, self-contained deployments.
+    let exe = std::env::current_exe().context("could not determine current executable path")?;
+    let dir = exe
+        .parent()
+        .context("could not determine executable directory")?;
     Ok(dir.join(CONFIG_FILE_NAME))
 }
 
