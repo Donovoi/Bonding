@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         }
         cli::Command::Run => {
             let cfg = config::load(&config_path)?;
-            let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            let stop_rx = tokio::sync::watch::channel(false).1;
             runtime::run_client(cfg, stop_rx, Box::new(|m| tracing::info!("{m}"))).await
         }
         cli::Command::Ui => {
