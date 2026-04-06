@@ -26,9 +26,7 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
 
 pub fn load(path: &Path) -> Result<ServerConfig> {
     if !path.exists() {
-        let cfg = ServerConfig::default();
-        save(path, &cfg, false)?;
-        return Ok(cfg);
+        return Ok(ServerConfig::default());
     }
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read config: {}", path.display()))?;
@@ -81,24 +79,43 @@ mod tests {
     }
 
     #[test]
-    fn load_creates_missing_config_with_defaults() {
+    fn load_missing_config_returns_defaults_without_writing() {
         let path = temp_config_path();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
+        if path.exists() {
+            fs::remove_file(&path).unwrap();
+        }
+        assert!(!path.exists());
 
         let cfg = load(&path).unwrap();
 
-        assert!(path.exists());
+        assert!(!path.exists());
         assert!(!cfg.enable_encryption);
         assert!(cfg.encryption_key_b64.is_none());
+    }
+
+    #[test]
+    fn create_default_creates_missing_config_with_defaults() {
+        let path = temp_config_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        if path.exists() {
+            fs::remove_file(&path).unwrap();
+        }
+        assert!(!path.exists());
+
+        assert!(create_default(&path).unwrap());
+        assert!(path.exists());
 
         let written = fs::read_to_string(&path).unwrap();
         let parsed: ServerConfig = toml::from_str(&written).unwrap();
-        assert_eq!(parsed.listen_addr, cfg.listen_addr);
+        assert_eq!(parsed.listen_addr, ServerConfig::default().listen_addr);
         assert!(!parsed.enable_encryption);
         assert!(parsed.encryption_key_b64.is_none());
 
-        fs::remove_file(path).unwrap();
+        fs::remove_file(&path).unwrap();
     }
 }
