@@ -57,8 +57,7 @@ pub fn create_default(path: &Path) -> Result<bool> {
     let mut cfg = ServerConfig::default();
     if cfg.enable_encryption {
         let key = PacketCrypto::generate_key();
-        cfg.encryption_key_b64 =
-            Some(base64::engine::general_purpose::STANDARD.encode(key));
+        cfg.encryption_key_b64 = Some(base64::engine::general_purpose::STANDARD.encode(key));
     }
     save(path, &cfg, false)?;
     Ok(true)
@@ -88,7 +87,10 @@ mod tests {
     #[test]
     fn default_config_path_uses_binary_directory() {
         let path = default_config_path().expect("default config path should resolve");
-        assert_eq!(path.file_name().and_then(|name| name.to_str()), Some(CONFIG_FILE_NAME));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(CONFIG_FILE_NAME)
+        );
     }
 
     #[test]
@@ -99,6 +101,19 @@ mod tests {
         let cfg = load(&path).expect("missing config should fall back to defaults");
 
         assert_eq!(cfg.listen_addr, ServerConfig::default().listen_addr);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn load_rejects_invalid_toml() {
+        let path = temp_path("invalid");
+        cleanup(&path);
+        ensure_parent_dir(&path).expect("parent directory should be created");
+        fs::write(&path, "not = [valid").expect("invalid config should be written");
+
+        let err = load(&path).expect_err("invalid TOML should fail to parse");
+
+        assert!(err.to_string().contains("failed to parse TOML"));
         cleanup(&path);
     }
 
@@ -133,6 +148,12 @@ mod tests {
 
         save(&path, &ServerConfig::default(), true).expect("forced overwrite should succeed");
         cleanup(&path);
+    }
+
+    #[test]
+    fn ensure_parent_dir_allows_relative_leaf_paths() {
+        ensure_parent_dir(Path::new(CONFIG_FILE_NAME))
+            .expect("leaf paths without a parent should be accepted");
     }
 
     #[test]

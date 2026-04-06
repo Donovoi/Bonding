@@ -447,6 +447,19 @@ mod tests {
     }
 
     #[test]
+    fn mode_selector_recovers_from_empty_selection() {
+        let mut selector = ModeSelector::new();
+        selector.state.select(None);
+
+        selector.next();
+        assert_eq!(selector.selected(), Some(Mode::Client));
+
+        selector.state.select(None);
+        selector.previous();
+        assert_eq!(selector.selected(), Some(Mode::Client));
+    }
+
+    #[test]
     fn cli_parses_nested_subcommands() {
         let cli = Cli::try_parse_from([
             "bonding",
@@ -468,8 +481,8 @@ mod tests {
             }
         );
 
-        let cli = Cli::try_parse_from(["bonding", "server", "run"])
-            .expect("server run should parse");
+        let cli =
+            Cli::try_parse_from(["bonding", "server", "run"]).expect("server run should parse");
 
         assert_eq!(
             cli,
@@ -478,6 +491,15 @@ mod tests {
                 command: Some(Command::Server {
                     subcommand: Some(ServerCommand::Run),
                 }),
+            }
+        );
+
+        let cli = Cli::try_parse_from(["bonding"]).expect("default invocation should parse");
+        assert_eq!(
+            cli,
+            Cli {
+                config: None,
+                command: None,
             }
         );
     }
