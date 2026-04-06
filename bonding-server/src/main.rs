@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         cli::Command::Run => {
+            config::create_default(&config_path)?;
             let cfg = config::load(&config_path)?;
             let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
             runtime::run_server(cfg, stop_rx, Box::new(|m| tracing::info!("{m}"))).await
