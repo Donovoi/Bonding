@@ -208,7 +208,7 @@ Both `bonding-client` and `bonding-server` support a TOML config file.
   - `bonding-client init-config`
   - `bonding-server init-config`
 
-If the config file does not exist, defaults are used.
+If the config file does not exist, Bonding writes a default config file automatically and starts with those defaults. Encryption is disabled by default, so a key is only required after you explicitly enable encryption in the config.
 
 ## Usage
 
@@ -368,4 +368,3 @@ at your option.
 Never use this for sensitive traffic without reviewing the code. The project is in early development and has not undergone security auditing.
 
 Report security issues privately to the maintainers.
-
