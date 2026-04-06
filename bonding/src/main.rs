@@ -199,7 +199,7 @@ async fn run_client_mode(
         }
         ClientCommand::Run => {
             let cfg = bonding_client::config::load(&config_path)?;
-            let stop_rx = tokio::sync::watch::channel(false).1;
+            let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
             bonding_client::runtime::run_client(cfg, stop_rx, Box::new(|m| tracing::info!("{m}")))
                 .await
         }
@@ -240,7 +240,7 @@ async fn run_server_mode(
         }
         ServerCommand::Run => {
             let cfg = bonding_server::config::load(&config_path)?;
-            let stop_rx = tokio::sync::watch::channel(false).1;
+            let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
             bonding_server::runtime::run_server(cfg, stop_rx, Box::new(|m| tracing::info!("{m}")))
                 .await
         }
