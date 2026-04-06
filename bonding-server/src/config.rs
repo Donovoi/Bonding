@@ -26,7 +26,9 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
 
 pub fn load(path: &Path) -> Result<ServerConfig> {
     if !path.exists() {
-        return Ok(ServerConfig::default());
+        let cfg = ServerConfig::default();
+        save(path, &cfg, false)?;
+        return Ok(cfg);
     }
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read config: {}", path.display()))?;
@@ -57,9 +59,46 @@ pub fn create_default(path: &Path) -> Result<bool> {
     let mut cfg = ServerConfig::default();
     if cfg.enable_encryption {
         let key = PacketCrypto::generate_key();
-        cfg.encryption_key_b64 =
-            Some(base64::engine::general_purpose::STANDARD.encode(key));
+        cfg.encryption_key_b64 = Some(base64::engine::general_purpose::STANDARD.encode(key));
     }
     save(path, &cfg, false)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_config_path() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join("bonding-tests")
+            .join(format!("server-config-{unique}.toml"))
+    }
+
+    #[test]
+    fn load_creates_missing_config_with_defaults() {
+        let path = temp_config_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+
+        let cfg = load(&path).unwrap();
+
+        assert!(path.exists());
+        assert!(!cfg.enable_encryption);
+        assert!(cfg.encryption_key_b64.is_none());
+
+        let written = fs::read_to_string(&path).unwrap();
+        let parsed: ServerConfig = toml::from_str(&written).unwrap();
+        assert_eq!(parsed.listen_addr, cfg.listen_addr);
+        assert!(!parsed.enable_encryption);
+        assert!(parsed.encryption_key_b64.is_none());
+
+        fs::remove_file(path).unwrap();
+    }
 }

@@ -85,7 +85,7 @@ impl Default for BondingConfig {
             tun_ipv4_addr: None,
             tun_ipv4_prefix: default_tun_ipv4_prefix(),
             tun_routes: Vec::new(),
-            enable_encryption: true,
+            enable_encryption: false,
             encryption_key_b64: None,
             health_check_interval: Duration::from_secs(5),
         }
@@ -195,7 +195,7 @@ impl Default for ServerConfig {
             windows_netnat_internal_prefix: None,
             tun_device_name: "bonding0".to_string(),
             tun_mtu: 1420,
-            enable_encryption: true,
+            enable_encryption: false,
             encryption_key_b64: None,
             health_interval: Duration::from_secs(5),
         }
@@ -483,7 +483,16 @@ mod tests {
         let config = BondingConfig::default();
         assert_eq!(config.server_port, 5000);
         assert_eq!(config.bonding_mode, "stripe");
-        assert!(config.enable_encryption);
+        assert!(!config.enable_encryption);
+        assert!(config.encryption_key_b64.is_none());
+    }
+
+    #[test]
+    fn test_server_config_default() {
+        let config = ServerConfig::default();
+        assert_eq!(config.listen_port, 5000);
+        assert!(!config.enable_encryption);
+        assert!(config.encryption_key_b64.is_none());
     }
 
     #[test]

@@ -143,7 +143,7 @@ pub async fn run(config_path: PathBuf, config: BondingConfig, config_created: bo
                 "No config found — created default config at {}",
                 config_path_display
             ));
-            s.push_log("Edit the config file, then press 'r' to reload it");
+            s.push_log("Default settings are ready to use; edit the config only if needed");
         }
         s.push_log("Press 's' to start/stop, 'r' to reload config, 'q' to quit");
         s.push_log("Use ↑/↓ or Page Up/Down to scroll logs");
