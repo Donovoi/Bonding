@@ -327,17 +327,10 @@ mod tests {
 
         // Packet 1 might have been marked as seen in replay window
         // When we try to insert again, it should fail
-        match result {
-            Err(ReorderError::Duplicate(_)) => {
-                // Expected case
-            }
-            Err(ReorderError::Replay(_)) => {
-                // Also acceptable - replay detection caught it
-            }
-            other => {
-                panic!("Expected Duplicate or Replay error, got {:?}", other);
-            }
-        }
+        assert!(matches!(
+            result,
+            Err(ReorderError::Duplicate(_)) | Err(ReorderError::Replay(_))
+        ));
     }
 
     #[test]

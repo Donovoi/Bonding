@@ -68,54 +68,110 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_config_path() -> PathBuf {
-        let unique = SystemTime::now()
+    fn temp_path(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock should be after unix epoch")
             .as_nanos();
         std::env::temp_dir()
-            .join("bonding-tests")
-            .join(format!("server-config-{unique}.toml"))
+            .join(format!("bonding-server-config-{label}-{nanos}"))
+            .join(CONFIG_FILE_NAME)
+    }
+
+    fn cleanup(path: &Path) {
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
     }
 
     #[test]
-    fn load_missing_config_returns_defaults_without_writing() {
-        let path = temp_config_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        if path.exists() {
-            fs::remove_file(&path).unwrap();
-        }
+    fn default_config_path_uses_binary_directory() {
+        let path = default_config_path().expect("default config path should resolve");
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(CONFIG_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn load_returns_defaults_when_file_is_missing() {
+        let path = temp_path("missing");
+        cleanup(&path);
         assert!(!path.exists());
 
-        let cfg = load(&path).unwrap();
+        let cfg = load(&path).expect("missing config should fall back to defaults");
 
+        assert_eq!(cfg.listen_addr, ServerConfig::default().listen_addr);
         assert!(!path.exists());
         assert!(!cfg.enable_encryption);
         assert!(cfg.encryption_key_b64.is_none());
+        cleanup(&path);
     }
 
     #[test]
-    fn create_default_creates_missing_config_with_defaults() {
-        let path = temp_config_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        if path.exists() {
-            fs::remove_file(&path).unwrap();
-        }
+    fn load_rejects_invalid_toml() {
+        let path = temp_path("invalid");
+        cleanup(&path);
+        ensure_parent_dir(&path).expect("parent directory should be created");
+        fs::write(&path, "not = [valid").expect("invalid config should be written");
+
+        let err = load(&path).expect_err("invalid TOML should fail to parse");
+
+        assert!(err.to_string().contains("failed to parse TOML"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn save_round_trips_config() {
+        let path = temp_path("roundtrip");
+        cleanup(&path);
+
+        let cfg = ServerConfig {
+            listen_addr: "127.0.0.2".into(),
+            listen_port: 7001,
+            ..ServerConfig::default()
+        };
+
+        save(&path, &cfg, false).expect("config should save");
+        let loaded = load(&path).expect("config should load");
+
+        assert_eq!(loaded.listen_addr, "127.0.0.2");
+        assert_eq!(loaded.listen_port, 7001);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn save_requires_force_to_overwrite() {
+        let path = temp_path("overwrite");
+        cleanup(&path);
+
+        save(&path, &ServerConfig::default(), false).expect("initial save should succeed");
+        let err = save(&path, &ServerConfig::default(), false)
+            .expect_err("second save without force should fail");
+        assert!(err.to_string().contains("use --force to overwrite"));
+
+        save(&path, &ServerConfig::default(), true).expect("forced overwrite should succeed");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn ensure_parent_dir_allows_relative_leaf_paths() {
+        ensure_parent_dir(Path::new(CONFIG_FILE_NAME))
+            .expect("leaf paths without a parent should be accepted");
+    }
+
+    #[test]
+    fn create_default_creates_config_once_without_generating_key() {
+        let path = temp_path("create-default");
+        cleanup(&path);
         assert!(!path.exists());
 
-        assert!(create_default(&path).unwrap());
-        assert!(path.exists());
+        assert!(create_default(&path).expect("default config should be created"));
+        assert!(!create_default(&path).expect("existing config should be preserved"));
 
-        let written = fs::read_to_string(&path).unwrap();
-        let parsed: ServerConfig = toml::from_str(&written).unwrap();
-        assert_eq!(parsed.listen_addr, ServerConfig::default().listen_addr);
-        assert!(!parsed.enable_encryption);
-        assert!(parsed.encryption_key_b64.is_none());
-
-        fs::remove_file(&path).unwrap();
+        let cfg = load(&path).expect("created config should load");
+        assert!(!cfg.enable_encryption);
+        assert!(cfg.encryption_key_b64.is_none());
+        cleanup(&path);
     }
 }
