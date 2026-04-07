@@ -23,7 +23,7 @@ On the server side (Linux-first), packets are authenticated/decrypted and writte
 
 ## Architecture
 
-The project is organized into three crates:
+The project is organized into four crates:
 
 - **bonding-core**: Core library with all bonding logic
   - `proto`: Wire protocol definitions and versioning
@@ -36,6 +36,13 @@ The project is organized into three crates:
   - `wintun_loader`: DLL loading with embedded support
   - `build.rs`: Build script for embedding Wintun DLL
 - **bonding-server**: Linux server application
+- **bonding**: Combined client/server binary with an interactive mode selector
+
+## Included Binaries
+
+- **bonding-client**: Recommended Windows client binary
+- **bonding-server**: Dedicated server binary for Linux and experimental Windows server mode
+- **bonding**: Combined binary that lets you choose client or server mode from one executable
 
 ## Requirements
 
@@ -103,7 +110,7 @@ Release builds from GitHub have the Wintun DLL **bundled directly into the execu
 
 1. Download the latest release from the [Releases page](https://github.com/Donovoi/Bonding/releases)
 2. Extract the archive to your preferred location
-3. Run `bonding-client.exe` as Administrator:
+3. Run `bonding-client.exe` as Administrator (or `bonding.exe` if you want the combined mode selector):
 
 ```powershell
 .\bonding-client.exe
@@ -208,7 +215,7 @@ Both `bonding-client` and `bonding-server` support a TOML config file.
   - `bonding-client init-config`
   - `bonding-server init-config`
 
-If the config file does not exist, Bonding writes a default config file automatically and starts with those defaults. Encryption is disabled by default, so a key is only required after you explicitly enable encryption in the config.
+If the config file does not exist, launching either the TUI or headless `run` mode writes a default config file automatically and starts with those defaults. Encryption is disabled by default, so a key is only required after you explicitly enable encryption in the config.
 
 ## Usage
 
@@ -223,6 +230,11 @@ Both binaries provide a small terminal UI (TUI) as a usability layer.
   - `bonding-server ui` (default if no subcommand)
   - `bonding-server run` (headless foreground run)
   - `bonding-server init-config [--force]`
+
+- `bonding`:
+  - `bonding ui` (default; choose client or server interactively)
+  - `bonding client ui|run|init-config|print-config-path`
+  - `bonding server ui|run|init-config|print-config-path`
 
 When `enable_tun=true`, the client and server forward real IP packets between the local TUN device and UDP.
 

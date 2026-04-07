@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Combined Bonding client and server binary"
+description = "Combined Bonding client and server binary with an interactive mode selector"
 
 [[bin]]
 name = "bonding"

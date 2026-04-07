@@ -21,7 +21,7 @@ use std::io::stdout;
 use std::path::PathBuf;
 
 /// Bonding - Multi-path network bonding
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, PartialEq, Eq)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Override config file path
@@ -32,7 +32,7 @@ struct Cli {
     command: Option<Command>,
 }
 
-#[derive(Subcommand, Debug, Clone)]
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 enum Command {
     /// Run as client (headless)
     Client {
@@ -48,7 +48,7 @@ enum Command {
     Ui,
 }
 
-#[derive(Subcommand, Debug, Clone)]
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 enum ClientCommand {
     /// Print the config file path
     PrintConfigPath,
@@ -64,7 +64,7 @@ enum ClientCommand {
     Ui,
 }
 
-#[derive(Subcommand, Debug, Clone)]
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 enum ServerCommand {
     /// Print the config file path
     PrintConfigPath,
@@ -410,4 +410,97 @@ fn draw_mode_selector(f: &mut Frame, selector: &mut ModeSelector) {
     ]))
     .alignment(Alignment::Center);
     f.render_widget(help, inner_layout[5]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_labels_match_expected_copy() {
+        assert_eq!(Mode::Client.name(), "Client");
+        assert_eq!(
+            Mode::Client.description(),
+            "Connect to a Bonding server and bond multiple network paths"
+        );
+        assert_eq!(Mode::Server.name(), "Server");
+        assert_eq!(
+            Mode::Server.description(),
+            "Run a Bonding server to accept client connections"
+        );
+    }
+
+    #[test]
+    fn mode_selector_wraps_in_both_directions() {
+        let mut selector = ModeSelector::new();
+
+        assert_eq!(selector.selected(), Some(Mode::Client));
+
+        selector.next();
+        assert_eq!(selector.selected(), Some(Mode::Server));
+
+        selector.next();
+        assert_eq!(selector.selected(), Some(Mode::Client));
+
+        selector.previous();
+        assert_eq!(selector.selected(), Some(Mode::Server));
+    }
+
+    #[test]
+    fn mode_selector_recovers_from_empty_selection() {
+        let mut selector = ModeSelector::new();
+        selector.state.select(None);
+
+        selector.next();
+        assert_eq!(selector.selected(), Some(Mode::Client));
+
+        selector.state.select(None);
+        selector.previous();
+        assert_eq!(selector.selected(), Some(Mode::Client));
+    }
+
+    #[test]
+    fn cli_parses_nested_subcommands() {
+        let cli = Cli::try_parse_from([
+            "bonding",
+            "--config",
+            "/tmp/bonding.toml",
+            "client",
+            "init-config",
+            "--force",
+        ])
+        .expect("client init-config should parse");
+
+        assert_eq!(
+            cli,
+            Cli {
+                config: Some(PathBuf::from("/tmp/bonding.toml")),
+                command: Some(Command::Client {
+                    subcommand: Some(ClientCommand::InitConfig { force: true }),
+                }),
+            }
+        );
+
+        let cli =
+            Cli::try_parse_from(["bonding", "server", "run"]).expect("server run should parse");
+
+        assert_eq!(
+            cli,
+            Cli {
+                config: None,
+                command: Some(Command::Server {
+                    subcommand: Some(ServerCommand::Run),
+                }),
+            }
+        );
+
+        let cli = Cli::try_parse_from(["bonding"]).expect("default invocation should parse");
+        assert_eq!(
+            cli,
+            Cli {
+                config: None,
+                command: None,
+            }
+        );
+    }
 }
