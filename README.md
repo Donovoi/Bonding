@@ -215,7 +215,7 @@ Both `bonding-client` and `bonding-server` support a TOML config file.
   - `bonding-client init-config`
   - `bonding-server init-config`
 
-If you launch either TUI with no config file present, it will create a default config file automatically on first launch. Headless `run` mode still falls back to in-memory defaults when the file is missing.
+If the config file does not exist, launching either the TUI or headless `run` mode writes a default config file automatically and starts with those defaults. Encryption is disabled by default, so a key is only required after you explicitly enable encryption in the config.
 
 ## Usage
 

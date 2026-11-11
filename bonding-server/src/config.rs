@@ -97,10 +97,14 @@ mod tests {
     fn load_returns_defaults_when_file_is_missing() {
         let path = temp_path("missing");
         cleanup(&path);
+        assert!(!path.exists());
 
         let cfg = load(&path).expect("missing config should fall back to defaults");
 
         assert_eq!(cfg.listen_addr, ServerConfig::default().listen_addr);
+        assert!(!path.exists());
+        assert!(!cfg.enable_encryption);
+        assert!(cfg.encryption_key_b64.is_none());
         cleanup(&path);
     }
 
@@ -157,22 +161,17 @@ mod tests {
     }
 
     #[test]
-    fn create_default_creates_config_once_and_generates_key() {
+    fn create_default_creates_config_once_without_generating_key() {
         let path = temp_path("create-default");
         cleanup(&path);
+        assert!(!path.exists());
 
         assert!(create_default(&path).expect("default config should be created"));
         assert!(!create_default(&path).expect("existing config should be preserved"));
 
         let cfg = load(&path).expect("created config should load");
-        let key = cfg
-            .encryption_key_b64
-            .expect("default config should generate an encryption key");
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(key)
-            .expect("generated key should be valid base64");
-
-        assert_eq!(decoded.len(), 32);
+        assert!(!cfg.enable_encryption);
+        assert!(cfg.encryption_key_b64.is_none());
         cleanup(&path);
     }
 }
